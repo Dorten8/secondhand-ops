@@ -195,3 +195,23 @@ prove-the-send rule.
 **Free to replace:** the provider adapter, the storage backend (JSON ↔ SQLite), the
 notification channel, the transport (HTTP ↔ CDP), and the language each stage is
 written in.
+
+---
+
+## 9. Where the output goes
+
+The destination of a message is **deployment configuration, not code**. Any user of
+this pipeline must be able to route it at their own chat without editing a script, so
+no chat id, channel id, topic or webhook may be hardcoded anywhere in the tree.
+
+The pipeline emits events (`buyer_message`, `draft_ready`, `delivery_verified`,
+`delivery_failed`, `item_sold`); a configurable **sink** consumes them. Sinks worth
+supporting: Telegram chat (optionally a forum topic), Discord channel, HTTP webhook,
+`stdout` for dry runs.
+
+A sink must be idempotent on the event id, must stay silent when there is nothing to
+say, and must **fail loudly at startup** if its destination is missing — never fall
+back to a default chat, because that sends production traffic somewhere unintended.
+
+Full config shape, sink guarantees and the split between production and development
+channels: [`docs/DELIVERY-ROUTING.md`](docs/DELIVERY-ROUTING.md).
