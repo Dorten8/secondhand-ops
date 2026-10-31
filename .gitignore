@@ -1,0 +1,6 @@
+state.db*
+dba_cookies.json
+dba_account.json
+captured_posts.jsonl
+*.pre-*
+__pycache__/
