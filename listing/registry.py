@@ -2,12 +2,12 @@
 registry.py — Shared item registry storage for marketplace listings.
 
 Implements the single-table seam defined in ARCHITECTURE.md §1:
-- Storage: Single atomic JSON file at /opt/data/marketplace/items.json (configurable via MARKETPLACE_REGISTRY_PATH)
+- Storage: Single atomic JSON file at /opt/data/marketplace/items.json (configurable via MARKETPLACE_REGISTRY)
 - Join key: (provider, item_id)
 - Statuses: draft, listed, reserved, sold, withdrawn
 - Concurrency: Atomic writes via write-to-temp + os.replace ensures readers
   (e.g. the messaging daemon) never observe locked, partial, or corrupt data.
-- Self-Healing: Automatically falls back to local directory if system path is not writable.
+- Strict Path Enforcement: Fails loudly if target registry is unwritable (prevents split-brain state).
 """
 
 from __future__ import annotations
@@ -15,16 +15,14 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("registry")
 
 DEFAULT_REGISTRY_PATH = Path("/opt/data/marketplace/items.json")
-FALLBACK_REGISTRY_PATH = Path(__file__).resolve().parent.parent / "items.json"
 
 VALID_PROVIDERS = {"dba", "facebook"}
 VALID_STATUSES = {"draft", "listed", "reserved", "sold", "withdrawn"}
@@ -87,26 +85,18 @@ class ItemRegistry:
         if path:
             self.path = Path(path)
         else:
-            env_path = os.getenv("MARKETPLACE_REGISTRY_PATH")
+            # Check unified env var MARKETPLACE_REGISTRY (with legacy MARKETPLACE_REGISTRY_PATH fallback)
+            env_path = os.getenv("MARKETPLACE_REGISTRY") or os.getenv("MARKETPLACE_REGISTRY_PATH")
             self.path = Path(env_path) if env_path else DEFAULT_REGISTRY_PATH
 
-        self._ensure_writable_path()
-
-    def _ensure_writable_path(self) -> None:
-        """Self-healing path validation: falls back to local workspace if target is unwritable."""
+    def _ensure_dir(self) -> None:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            # Test write access
-            test_file = self.path.parent / ".write_test"
-            test_file.touch(exist_ok=True)
-            test_file.unlink()
         except (PermissionError, OSError) as e:
-            logger.warning(
-                f"Configured registry path {self.path} is not writable ({e}). "
-                f"Falling back to local path: {FALLBACK_REGISTRY_PATH}"
-            )
-            self.path = FALLBACK_REGISTRY_PATH
-            self.path.parent.mkdir(parents=True, exist_ok=True)
+            raise PermissionError(
+                f"Registry directory '{self.path.parent}' cannot be created or accessed ({e}). "
+                f"Ensure the path exists with proper permissions, or export MARKETPLACE_REGISTRY=/path/to/items.json"
+            ) from e
 
     def load_all(self) -> List[Item]:
         """Read all items from the registry file. Returns empty list if missing."""
@@ -119,18 +109,18 @@ class ItemRegistry:
                     return []
                 raw_list = json.loads(content)
                 if not isinstance(raw_list, list):
-                    return []
+                    raise ValueError(f"Registry at {self.path} must contain a JSON array, got {type(raw_list)}")
                 return [Item.from_dict(item) for item in raw_list]
-        except Exception as e:
-            logger.error(f"Error loading registry from {self.path}: {e}")
-            return []
+        except json.JSONDecodeError as e:
+            logger.error(f"Malformed JSON in registry file {self.path}: {e}")
+            raise
 
     def save_all(self, items: List[Item]) -> None:
         """
         Atomic WAL write: writes to temporary file in the same directory,
         then atomically replaces target via os.replace.
         """
-        self._ensure_writable_path()
+        self._ensure_dir()
         tmp_path = self.path.with_name(f"{self.path.name}.tmp.{os.getpid()}")
         try:
             payload = [i.to_dict() for i in items]
@@ -139,11 +129,15 @@ class ItemRegistry:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, self.path)
-            # Ensure proper group/world read permissions if running on shared hosts
             try:
                 os.chmod(self.path, 0o664)
             except OSError:
                 pass
+        except (PermissionError, OSError) as e:
+            raise PermissionError(
+                f"Failed to write to registry at '{self.path}' ({e}). "
+                f"Ensure your user has write permissions to {self.path.parent} or configure MARKETPLACE_REGISTRY."
+            ) from e
         finally:
             if tmp_path.exists():
                 try:
@@ -171,7 +165,6 @@ class ItemRegistry:
         now = utc_now_iso()
 
         for idx, existing in enumerate(items):
-            # Match by (provider, item_id) if item_id exists
             if item.item_id and existing.provider == item.provider and existing.item_id == item.item_id:
                 if existing.status != item.status:
                     item.status_changed_at = now
@@ -181,7 +174,6 @@ class ItemRegistry:
                 items[idx] = item
                 updated = True
                 break
-            # Match by local_draft_id for drafts
             elif item.local_draft_id and existing.local_draft_id == item.local_draft_id:
                 if existing.status != item.status:
                     item.status_changed_at = now
