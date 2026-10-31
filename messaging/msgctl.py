@@ -164,7 +164,7 @@ def cmd_approve(a):
         body = (Path(a.body_file).read_text(encoding="utf-8").rstrip("\n")
                 if a.body_file else d["body"])
         try:
-            res = prov(d["provider"]).send(d["conv_id"], body)
+            res = prov(d["provider"]).send(d["conv_id"], body, via=a.via)
         except AuthError as e:
             st.decide(a.id, "failed", a.by, result=f"auth: {e}")
             print(f"AUTH: {e}", file=sys.stderr)
@@ -292,6 +292,8 @@ def main():
     ap.add_argument("--action", required=True, choices=["send", "ignore", "supersede"])
     ap.add_argument("--body-file"); ap.add_argument("--body")
     ap.add_argument("--by", default="Jacob")
+    ap.add_argument("--via", default="dom", choices=["dom", "http"],
+                    help="dom = proven path through the browser; http = direct API call")
     ap.set_defaults(fn=cmd_approve)
 
     a = p.parse_args()
