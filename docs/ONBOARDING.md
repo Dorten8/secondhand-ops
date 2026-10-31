@@ -71,6 +71,7 @@ legacy you can ignore.
 | 4 | **HTTP send not yet primary** | `providers/dba.py::send` | `send_http()` works; default is still `via="dom"` until one real HTTP send is verified |
 | 5 | ~~No fixture tests~~ **done** | `tests/test_invariants.py` | runs with no deps: approval gate, dedupe, router parsing, registry example |
 | 6 | **`bin/listctl` vs `src/publishing/listctl.py`** | both | the root shim predates the `src/` move; verify it still forwards |
+| 6b | **Sold on the marketplace is dry-run only** | `src/publishing/sold_marketplace.py` | the control ("Marker som solgt") is found and clickable; no real ad has been marked sold yet, so the first `--yes` run is the verification |
 | 7 | **Router is not wired to a chat** | `src/conversations/approvals.py` | the parser and executor exist and are tested; what is missing is something that reads the human's reply from the chat and calls `msgctl decide` — today the agent does that by hand |
 
 ---

@@ -172,6 +172,13 @@ Two rules that cost real money to learn: publish in a batch but **record per
 listing**, so one failure cannot orphan the others; and never claim a listing
 exists because a request returned success — re-read it.
 
+> **Sold is a two-step action, and both steps matter.** `listctl sold <id>` updates the
+> registry, cascades to related wheelsets and syncs Notion — the database half.
+> `sold_marketplace.py` then presses the marketplace's own "mark as sold" control,
+> because the ad staying live is how a buyer ends up asking about something that is
+> already gone. It refuses when a title match is ambiguous and verifies the ad reads
+> as sold afterwards.
+>
 > **In this implementation:** `src/publishing/batch_publisher.py` posts to DBA and
 > Facebook through `src/publishing/providers/`. Credentials come from a **human
 > login done once** in a headed browser (`src/auth/login_marketplace.py`), then a
