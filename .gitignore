@@ -1,6 +1,37 @@
-state.db*
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# Environment and Secrets (CRITICAL: Never commit credentials)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.token
+*.cookies.json
+.cookies.json
 dba_cookies.json
 dba_account.json
 captured_posts.jsonl
+state.db*
 *.pre-*
-__pycache__/
+
+# Browser automation profiles and cache
+browser_profile/
+.playwright/
+
+# Logs and runtime databases
+*.log
+*.jsonl
+.tg_update_offset
+
+# Personal photo storage (keep repository lightweight and agnostic)
+items/**/photos/
+inbox/

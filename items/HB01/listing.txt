@@ -1,0 +1,28 @@
+🏷️ Complete MTB Cockpit: 31.8mm Handlebar + Hydraulic Brakes + Altus 3x7
+📦 Item ID: #HB01
+💰 Price: 275 DKK
+
+🚲 Compatibility: Fits standard 31.8mm handlebar stems; brakes fit standard post-mount / IS; shifters fit 3x7 speed Shimano/SRAM drivetrains
+
+📝 Description:
+Complete MTB / Commuter Cockpit Setup (HB01)
+
+• Components:
+- Handlebar: Black alloy riser bar, 31.8mm clamp, ~625mm width
+- Brakes: Front & rear hydraulic disc brake system (levers, hoses, calipers)
+- Shifters: Shimano Altus 3x7 speed trigger shifters with optical gear indicators
+- Grips: Ergonomic rubber grips included
+
+• Condition: Solid condition, shifters engage cleanly, hydraulic lines intact.
+
+🔧 Technical Specifications:
+• Compatibility: Fits standard 31.8mm handlebar stems; brakes fit standard post-mount / IS; shifters fit 3x7 speed Shimano/SRAM drivetrains
+• handlebar_type
+• clamp_diameter_mm
+• width_mm
+• shifters
+• brakes
+• grips
+• cables_hoses
+
+🚴 Ready to inspect and pick up in Copenhagen. Shipping available upon agreement.
