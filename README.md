@@ -7,8 +7,16 @@ reaches a stranger.
 Built for DBA.dk and Facebook Marketplace. Provider-agnostic by construction — a
 new marketplace is one file per stage, never a change to the pipeline.
 
-→ **Read [`docs/architecture.md`](docs/architecture.md) first.** It has the
-mermaid diagrams, the stage contracts, and a worked example from a real sale.
+→ **Read [`docs/architecture.md`](docs/architecture.md) first** — the mermaid
+diagrams, stage contracts, and a worked example from a real sale.
+→ **Then [`docs/ONBOARDING.md`](docs/ONBOARDING.md)** — the 20-minute reading
+order, the seven invariants, and exactly what is still unimplemented.
+
+### Verify it in one command
+
+```bash
+python3 tests/test_invariants.py     # no network, no marketplace, no deps
+```
 
 ---
 
