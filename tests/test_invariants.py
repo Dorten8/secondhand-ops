@@ -68,6 +68,29 @@ def test_registry_example_parses():
         "sold and draft rows must never be actionable"
 
 
+def test_router_shortcuts():
+    """The human's reply is routed by a parser, not by a model reading prose."""
+    from conversations import approvals as A
+    assert A.parse_reply("1")["action"] == A.ACTION_SEND_AS_IS
+    assert A.parse_reply("yes")["action"] == A.ACTION_SEND_AS_IS
+    assert A.parse_reply("ja")["action"] == A.ACTION_SEND_AS_IS
+    assert A.parse_reply("3")["action"] == A.ACTION_IGNORE
+    assert A.parse_reply("no")["action"] == A.ACTION_IGNORE
+    assert A.parse_reply("nej")["action"] == A.ACTION_IGNORE
+
+    d = A.parse_reply("2: Hej, den er desværre solgt")
+    assert d["action"] == A.ACTION_SEND_TEXT
+    assert d["body"] == "Hej, den er desværre solgt"
+
+
+def test_router_freeform_is_not_invalid():
+    """Anything outside the shortcuts is an instruction for the agent, not a rejection."""
+    from conversations import approvals as A
+    d = A.parse_reply("kan du spørge om han henter i weekenden i stedet")
+    assert d["action"] == A.ACTION_FREEFORM
+    assert d["body"] == "kan du spørge om han henter i weekenden i stedet"
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

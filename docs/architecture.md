@@ -217,8 +217,12 @@ invalid choice. Anything that ends up as "send" goes through the same verificati
 anything that does not, sends nothing.
 
 > **In this implementation:** `src/conversations/poll.py` is the trigger; drafts and
-> approvals go through `src/conversations/msgctl.py`, and replies are handed to the
-> human on Telegram by `notify.py` with the four options
+> approvals go through `src/conversations/msgctl.py`. The draft card is delivered by
+> the **script** (`msgctl notify --id N` → `notify.py::send_telegram`), not by the
+> agent writing a message, so the wording cannot drift and the delivery costs nothing.
+> The human's answer is routed by `src/conversations/approvals.py`, which maps
+> `yes/1 · no/3 · 2: <text> · anything else` to an action with no model involved,
+> and shows the four options
 > `1 send as is · 2 send what I write · 3 ignore · 4 other`. Sending is
 > `providers/dba.py::send`, which verifies by re-reading the API — a 200 is not
 > accepted as proof. Endpoints and the three rules for trusting a send:

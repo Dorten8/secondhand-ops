@@ -69,8 +69,9 @@ legacy you can ignore.
 | 2 | **DBA transcript endpoint** | `src/conversations/providers/dba.py::fetch_thread` | the messages endpoint is not captured, so a thread returns only the last message; the store accumulates history instead |
 | 3 | **Registry wiring into poll** | `src/conversations/poll.py` | the read-only door exists but `poll` does not yet skip `sold` rows from it; today it relies on the provider's own sold flag |
 | 4 | **HTTP send not yet primary** | `providers/dba.py::send` | `send_http()` works; default is still `via="dom"` until one real HTTP send is verified |
-| 5 | **No fixture tests** | `tests/` | a captured JSON payload is enough to test parsing without a marketplace |
+| 5 | ~~No fixture tests~~ **done** | `tests/test_invariants.py` | runs with no deps: approval gate, dedupe, router parsing, registry example |
 | 6 | **`bin/listctl` vs `src/publishing/listctl.py`** | both | the root shim predates the `src/` move; verify it still forwards |
+| 7 | **Router is not wired to a chat** | `src/conversations/approvals.py` | the parser and executor exist and are tested; what is missing is something that reads the human's reply from the chat and calls `msgctl decide` — today the agent does that by hand |
 
 ---
 

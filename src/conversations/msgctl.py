@@ -15,6 +15,8 @@ how to deliver `notify.py` output. That is what makes the lane portable.
   msgctl drafts                    proposals awaiting a decision
   msgctl show --id N               render one draft as the message the human sees
   msgctl approve --id N --action send|ignore|supersede [--body-file F] [--by NAME]
+  msgctl decide --id N --text "<what the human replied>"   # deterministic router
+  msgctl notify --id N [--no-send]                          # deliver the draft card
   msgctl stats
 
 Exit codes: 0 ok, 2 auth/network, 3 refused (gate), 4 send unverified.
@@ -30,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "providers"))
 
+import approvals                                                   # noqa: E402
 import notify                                                      # noqa: E402
 from mstore import Store                                            # noqa: E402
 from base import AuthError, ProviderError                           # noqa: E402
@@ -253,6 +256,47 @@ def cmd_unanswered(a):
     return 0
 
 
+def cmd_notify(a):
+    """Deliver the draft card to the human. This is the script the chat receives —
+    not the agent writing prose, so the wording cannot drift and it costs nothing."""
+    st = Store()
+    d = st.draft(a.id)
+    if not d:
+        print(f"no draft #{a.id}", file=sys.stderr)
+        return 3
+    html = notify.to_html(d)
+    if a.no_send:
+        print(html)
+        return 0
+    res = notify.send_telegram(html, chat=a.chat, thread=a.thread)
+    print(json.dumps(res))
+    return 0 if res.get("ok") else 4
+
+
+def cmd_decide(a):
+    """Route a human reply without a model in the loop.
+
+    'yes'/'1' -> send the draft as is;  'no'/'3' -> ignore;
+    '2: <text>' -> send that text;  anything else -> an instruction for the agent.
+    """
+    st = Store()
+    d = st.draft(a.id)
+    if not d:
+        print(f"no draft #{a.id}", file=sys.stderr)
+        return 3
+    decision = approvals.parse_reply(a.text)
+    out = {"draft_id": a.id, "parsed": decision}
+
+    if decision["action"] == approvals.ACTION_FREEFORM:
+        out["note"] = ("instruction — hand back to the agent; nothing was sent")
+        print(json.dumps(out, indent=1, ensure_ascii=False))
+        return 0
+
+    out["result"] = approvals.apply(st, prov(d["provider"]), a.id, decision, a.by)
+    print(json.dumps(out, indent=1, ensure_ascii=False))
+    return 0 if out["result"].get("ok") else 4
+
+
 def cmd_stats(a):
     print(json.dumps(Store().stats(), indent=1))
     return 0
@@ -274,6 +318,19 @@ def main():
     un.add_argument("--days", type=int, default=14)
     un.add_argument("--json", action="store_true")
     un.set_defaults(fn=cmd_unanswered)
+
+    nt = sub.add_parser("notify")
+    nt.add_argument("--id", type=int, required=True)
+    nt.add_argument("--no-send", action="store_true")
+    nt.add_argument("--chat", default=notify.DEFAULT_CHAT)
+    nt.add_argument("--thread", type=int, default=notify.DEFAULT_THREAD)
+    nt.set_defaults(fn=cmd_notify)
+
+    dc = sub.add_parser("decide")
+    dc.add_argument("--id", type=int, required=True)
+    dc.add_argument("--text", required=True)
+    dc.add_argument("--by", default="Jacob")
+    dc.set_defaults(fn=cmd_decide)
 
     sub.add_parser("stats").set_defaults(fn=cmd_stats)
 

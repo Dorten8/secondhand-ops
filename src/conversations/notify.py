@@ -11,6 +11,45 @@ THE FOUR OPTIONS ARE JACOB'S OWN, verbatim from 2026-10-31:
 ONE BUYER = ONE MESSAGE. Never bundle two buyers, even on the same ad, because
 he answers with a bare number and bundling makes the number ambiguous.
 """
+from pathlib import Path
+
+
+TELEGRAM_API = "https://api.telegram.org"
+DEFAULT_CHAT = "-1004362684061"      # Hermes group
+DEFAULT_THREAD = 13                  # Inbox topic
+
+
+def _escape(t: str) -> str:
+    return (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def to_html(draft: dict) -> str:
+    """The same message as `draft_message`, in Telegram HTML so formatting survives
+    without a Markdown parser failing on a stray underscore or asterisk."""
+    title = _escape((draft.get("item_title") or "").strip())
+    buyer = _escape((draft.get("partner_name") or "").strip() or "buyer")
+    inbound = _escape((draft.get("inbound") or "").strip())
+    body = _escape((draft.get("body") or "").strip())
+
+    head = f"🤖 <b>[Hermes] — {buyer}"
+    if title:
+        head += f" · {title[:55]}"
+    head += f"</b>  <code>#{draft['id']}</code>"
+
+    parts = [head, ""]
+    if inbound:
+        parts += [f"“{inbound[:500]}”", ""]
+    parts += ["<b>Draft:</b>", f"<blockquote>{body}</blockquote>", "",
+              _escape(OPTIONS_TEXT)]
+    return "\n".join(parts)
+
+
+OPTIONS_TEXT = (
+    "1️⃣ Send as is  (zero tokens)\n"
+    "2️⃣ Send what I write  (zero tokens)\n"
+    "3️⃣ Ignore\n"
+    "4️⃣ Other (say what you want)"
+)
 
 OPTIONS = (
     "1\ufe0f\u20e3 Send as is  (zero tokens)\n"
@@ -50,10 +89,66 @@ def digest_message(new_convs: list) -> str:
     return "\n".join(lines)
 
 
+def send_telegram(text_html: str, chat: str = DEFAULT_CHAT,
+                  thread: int | None = DEFAULT_THREAD, token: str | None = None) -> dict:
+    """Post a rendered draft to the human. Zero tokens — a plain HTTP call.
+
+    Reads the bot token from the environment file; never takes it as an argument
+    so it cannot leak into shell history.
+    """
+    import json as _json
+    import re as _re
+    import urllib.request as _url
+
+    if token is None:
+        env = Path("/home/hermes/hermes/home/.env").read_text(encoding="utf-8", errors="replace")
+        m = _re.search(r"^TELEGRAM_BOT_TOKEN=(.+)$", env, _re.M)
+        if not m:
+            raise RuntimeError("TELEGRAM_BOT_TOKEN not found in .env")
+        token = m.group(1).strip().strip('"').strip("'")
+
+    payload = {"chat_id": chat, "text": text_html, "parse_mode": "HTML",
+               "disable_web_page_preview": True}
+    if thread:
+        payload["message_thread_id"] = thread
+
+    req = _url.Request(f"{TELEGRAM_API}/bot{token}/sendMessage",
+                       data=_json.dumps(payload).encode(),
+                       headers={"Content-Type": "application/json"})
+    res = _json.load(_url.urlopen(req, timeout=25))
+    return {"ok": res.get("ok"), "message_id": res.get("result", {}).get("message_id")}
+
+
 if __name__ == "__main__":
-    import json
-    import sys
-    demo = {"id": 7, "item_title": 'Rear Wheel / Baghjul - 28"', "partner_name": "Gunnar N",
-            "inbound": "Passer dette hjul til min 7-speed racer?",
-            "body": "Hej Gunnar,\n\nNej, det passer desværre ikke. 126 mm mod 135 mm.\n\nMvh Jakub"}
-    print(draft_message(demo) if len(sys.argv) < 2 else json.dumps(demo, indent=1))
+    import argparse
+    import json as _json
+    import sys as _sys
+
+    ap = argparse.ArgumentParser(description="Render or deliver a draft to the human.")
+    ap.add_argument("--draft", type=int, help="draft id in the store")
+    ap.add_argument("--send", action="store_true", help="post it to the chat (zero tokens)")
+    ap.add_argument("--chat", default=DEFAULT_CHAT)
+    ap.add_argument("--thread", type=int, default=DEFAULT_THREAD)
+    a = ap.parse_args()
+
+    if not a.draft:
+        demo = {"id": 7, "item_title": 'Rear Wheel / Baghjul - 28"', "partner_name": "Gunnar N",
+                "inbound": "Passer dette hjul til min 7-speed racer?",
+                "body": "Hej Gunnar,\n\nNej, det passer desværre ikke. 126 mm mod 135 mm.\n\nMvh Jakub"}
+        print(draft_message(demo))
+        _sys.exit(0)
+
+    from mstore import Store
+    d = Store().draft(a.draft)
+    if not d:
+        print(f"no draft #{a.draft}", file=_sys.stderr)
+        _sys.exit(3)
+
+    html = to_html(d)
+    if not a.send:
+        print(html)
+        _sys.exit(0)
+
+    res = send_telegram(html, chat=a.chat, thread=a.thread)
+    print(_json.dumps(res))
+    _sys.exit(0 if res.get("ok") else 4)
