@@ -51,10 +51,16 @@ two must be able to fail separately.
 ```mermaid
 flowchart LR
     H(["Human"]):::human
-    REG["1 Registration"]:::stage --> CONF["2 Confirmation"]:::stage
-    CONF -->|"human confirms"| DB[("3 Database")]:::stage
-    DB --> UPL["4 Upload"]:::stage --> MK[["Marketplaces"]]:::ext
-    MK -->|"messages"| HAND["5 Handling"]:::stage
+    REG["1 Registration<br/>capture · check · go"]:::stage
+    DB[("2 Database")]:::stage
+    UPL["3 Upload"]:::stage
+    MK[["Marketplaces"]]:::ext
+    HAND["4 Handling"]:::stage
+
+    H -->|materials| REG
+    REG -->|"asks back / human says go"| H
+    REG --> DB --> UPL --> MK
+    MK -->|messages| HAND
     DB -->|"still live?"| HAND
     HAND <-->|"approve / edit / ignore"| H
 
