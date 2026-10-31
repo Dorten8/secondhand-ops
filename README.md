@@ -1,72 +1,117 @@
 # secondhand-ops
 
-An autonomous, human-in-the-loop secondhand sales platform for online marketplaces (DBA.dk & Facebook Marketplace).
+Second-hand marketplace ops, end to end: **materials in → listings out → buyer
+conversations handled → item marked sold**, with a human approving anything that
+reaches a stranger.
 
-It manages the entire lifecycle: **intake, bilingual catalog creation, relational bundle cascades, multi-platform listing, inbox polling, reply drafting, human approval gate, and verified delivery.**
+Built for DBA.dk and Facebook Marketplace. Provider-agnostic by construction — a
+new marketplace is one file per stage, never a change to the pipeline.
 
-Read [`ARCHITECTURE.md`](ARCHITECTURE.md) for the end-to-end design philosophy, stage boundaries, and the access strategy.
-
----
-
-## 🏛️ Pipeline Architecture
-
-```
- capture  →  register  →  list    →  poll   →  draft  →  approve  →  send   →  verify
- ad text     items      publish     inbox      reply     human       deliver   prove
-             .json
-```
-
-The pipeline is split into two complementary lanes that meet through a single atomic WAL seam (`/opt/data/marketplace/items.json`):
-
-1. **Listing Lane (`listing/` + `listctl.py`)**:
-   - Audio memo + photo intake and LLM extraction (`listing/catalog.py`).
-   - Title standardization: `WHAT - WHATTYPE - MAKE`.
-   - Unified bilingual copy (Danish + English + specs + pickup terms).
-   - Relational inventory graph & mutual invalidation (`listing/inventory.py`): e.g., Wheelset `WS01` ⟷ Front `WF03` + Rear `WRC06`.
-   - Multi-platform publishing with quota guards (`batch_publisher.py`).
-   - Atomic WAL status emitter (`listctl.py sold <ITEM_ID>`).
-   - Optional decoupled Notion SSoT bridge (`listing/integrations/notion.py`).
-
-2. **Messaging Lane (`messaging/` + `msgctl.py`)**:
-   - Zero-token HTTP inbox poll (`messaging/poll.py`).
-   - LLM reply drafting (`messaging/msgctl.py`).
-   - Strict Human-in-the-Loop approval gate (enforced in code, not prompt).
-   - Authenticated REST send with post-send API delivery verification.
-   - Stateless read of `items.json` to close buyer drafts for sold/withdrawn items.
+→ **Read [`docs/architecture.md`](docs/architecture.md) first.** It has the
+mermaid diagrams, the stage contracts, and a worked example from a real sale.
 
 ---
 
-## 🚀 Quickstart
+## Layout — directories are diagram nodes
 
-See [SETUP.md](SETUP.md) for complete prerequisite checks and environment configuration.
+Every directory under `src/` is a node in the architecture diagram, and the names
+match exactly:
+
+```
+src/
+├── intake/         voice memo · photo · text  →  structured item folder
+├── catalog/        item folders  →  catalogue + wheelset relations
+├── publishing/     catalogue  →  live ads on DBA / Facebook
+├── conversations/  buyer messages  →  draft  →  approve  →  send  →  verified
+├── registry/       the seam: items.json (writer) + Notion mirror
+└── auth/           marketplace sessions — human logins only
+bin/                thin entry points (msgctl, listctl, msg_poll.sh)
+docs/               architecture, DBA API facts, delivery routing
+examples/           account config, registry rows, three worked item folders
+tests/
+```
+
+`src/conversations/registry.py` is a **read-only** door to the seam; the store
+itself lives in `src/registry/registry.py`. Messaging never writes it — a
+messaging mistake talks to a stranger, a listing mistake mis-prices an ad, so the
+two must be able to fail separately.
+
+---
+
+## The pipeline
+
+```mermaid
+flowchart LR
+    H(["human"]):::human
+    I["intake"] --> C["catalog"] --> P["publishing"] --> MK[["marketplaces"]]:::ext
+    MK -->|buyer message| V["conversations"]
+    P -->|item_id after publish| R[("registry")]
+    R -->|sold ⇒ stop replying| V
+    V <-->|approve / ignore / rewrite| H
+    A["auth"] -.->|session| P
+    A -.->|session| V
+```
+
+Full diagram, per-stage contracts and the conversations state machine:
+[`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Quickstart
 
 ```bash
-# 1. Clone repository
-git clone git@github.com:Dorten8/secondhand-ops.git
-cd secondhand-ops
+pip install -r requirements.txt
 
-# 2. Configure credentials
-cp .env.example .env
+# 1. who you are on the marketplace (the id appears in the conversation URL)
+cp examples/dba_account.example.json src/conversations/dba_account.json
 
-# 3. Listing Ops: Inspect current inventory
-python3 listctl.py ls
+# 2. log in by hand once, then export the cookies
+python3 src/auth/login_marketplace.py
+python3 bin/msgctl auth
 
-# 4. Listing Ops: Mark an item sold (automatically cascades to constituent parts)
-python3 listctl.py sold WRS06
+# 3. first poll PRIMES — records history, queues nothing — then stays silent
+python3 bin/msgctl poll
+```
 
-# 5. Messaging Ops: Poll inbox and check pending threads
-python3 messaging/msgctl.py poll
-python3 messaging/msgctl.py pending
+Full prerequisites: [`SETUP.md`](SETUP.md).
+
+### Daily use
+
+```bash
+python3 bin/msgctl pending               # buyers who spoke last (JSON)
+python3 bin/msgctl unanswered --days 14  # we spoke, nobody answered
+python3 bin/msgctl draft --conv <id> --body-file /tmp/b.txt --inbound "<theirs>"
+python3 bin/msgctl show --id 7           # exactly what the human sees
+python3 bin/msgctl approve --id 7 --action send|ignore|supersede --by Jacob
 ```
 
 ---
 
-## 🛠️ Modularity & Harness Agnosticism
+## Guarantees that are code, not intentions
 
-This codebase is deliberately modular, stateless, and harness-agnostic:
-- **Zero Coupling Across Internal State**: Stages interact exclusively via files and rows (`items.json`, SQLite store, or stdout JSON).
-- **Runs Everywhere**: Supported by Antigravity, Cursor, VS Code, Claude Code, or scheduled cron daemons.
-- **Access Strategy**:
-  - *Primary*: Authenticated HTTP + exported cookies (fast, headless, zero tokens, deterministic).
-  - *Fallback / Bootstrap*: Native Chrome DevTools Protocol (CDP) for initial login capture and dynamic DOM operations.
-- **Safety First**: Outbound messages NEVER leave without explicit human approval (`msgctl.py approve`).
+- **Approval gate** — a draft leaves `pending` exactly once; deciding twice is refused, so a retry cannot double-send.
+- **Verified delivery** — after sending, the marketplace API is re-read and the message must be the last outgoing one. A 200 is not proof.
+- **No auto-retry on an unverified send** — a retry can duplicate a message to a real person.
+- **Idempotent polling** — stable content hashes; a message never queues twice.
+- **Prime on first run** — history is never announced as news.
+- **No login automation, ever** — session expiry raises and waits for a human.
+
+---
+
+## Status
+
+| stage | DBA | Facebook |
+|---|---|---|
+| intake | works (local Whisper, no API key) | n/a |
+| catalog | works | n/a |
+| publishing | works | stub + notes |
+| conversations | **read via JSON API, send verified** | stub + notes |
+| registry | works | works |
+
+DBA sending is HTTP-capable (`--via http`); the DOM path stays the default until
+one HTTP send is verified in production. See [`docs/DBA-API.md`](docs/DBA-API.md)
+for the endpoint and the three rules for trusting a send.
+
+## License
+
+MIT.
