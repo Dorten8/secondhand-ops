@@ -67,20 +67,40 @@ The transcript is loaded by a separate call that has not been captured yet.
 
 ---
 
-## 3. Send a message — ❌ NOT YET CAPTURED
+## 3. Send a message — ✅ CAPTURED 2026-10-31
 
-This is the one missing piece. `messaging/capture_post.py` watches the network for
-a `POST` whose URL mentions `/messages/api/` or `conversation`, and dumps method,
-URL, headers and body to `captured_posts.jsonl`.
+Observed on a real send (network watched while the message left):
 
-Once captured, `providers/dba.py::send` can replace the DOM path and the entire
-lane becomes HTTP-only — no browser, runnable anywhere.
+```
+POST /messages/api/conversations/users/{loginId}/conversations/{conversationId}/messages
+Content-Type: application/json
 
-**Until then** sending goes through the DOM over CDP and is verified by re-reading
-endpoint #1 (`lastMessageOutgoing` must flip to `true` and the preview must match).
-A send that cannot be proven is reported failed and never retried automatically.
+{"clientMessageId": "<uuid4>",
+ "body": "text, newlines are \n",
+ "messageType": "textMessage",
+ "sent": "2026-10-31T14:30:55.076",
+ "attachments": []}
+```
 
----
+**Auth is cookies only** — no CSRF token, no `fb_dtsg`-style per-load token. That is
+why sending can be HTTP-only, with no browser at all.
+
+`messaging/providers/dba.py` has `send_http()` wired to this, and `send(via="http")`
+to use it. Default is still `via="dom"` until the HTTP path has done one verified
+send in production.
+
+### Three things that must be true before you believe a send happened
+
+1. **A synthetic `.click()` is not trusted.** DBA's SPA ignores it — the URL
+   changes and the conversation pane never hydrates, so every open silently
+   "fails". Dispatch a real mouse event at the element's coordinates
+   (`Input.dispatchMouseEvent`).
+2. **The composer has no placeholder any more.** Match
+   `textarea[aria-label^="Skriv din besked"]`. With the old
+   `placeholder="Skriv en besked..."` selector, the composer is never found.
+3. **A 200 is not proof.** Re-read `conversationgroups` and require
+   `lastMessageOutgoing == true` **and** our text in `lastMessagePreview`.
+   Anything less is reported as failed, and never retried automatically.
 
 ## 4. Endpoints seen in the app but not investigated
 
