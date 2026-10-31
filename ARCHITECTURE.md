@@ -1,37 +1,62 @@
-# Architecture — how listing and messaging fit together
+# secondhand-ops — architecture
 
-Two systems, one item. This repo owns the **conversation** side; the **listing**
-side (ad creation, photos, pricing, publishing) is a separate codebase. They meet
-at exactly one place, and this document defines it so neither side has to guess.
+**Purpose.** Sell second-hand items without living inside a marketplace inbox. An
+agent does the repetitive work — watch the listings, watch the inbox, draft replies,
+know who owes a photo — and **a human approves every outbound message**. Nothing is
+sent on its own authority.
 
-```
-  ┌────────────────────────┐            ┌──────────────────────────┐
-  │  LISTING SIDE          │            │  MESSAGING SIDE          │
-  │  (own repo)            │            │  (this repo)             │
-  │                        │            │                          │
-  │  create ad ──┐         │            │   ┌── poll ──┐           │
-  │  photos      │         │            │   │  draft   │           │
-  │  price       ├─▶ item ─┼── items ──▶│   │ approve  │           │
-  │  publish     │         │    .json   │   └── send ──┘           │
-  │  status ─────┘         │            │                          │
-  └────────────────────────┘            └──────────────────────────┘
-               │                                      │
-               └────────── same marketplace ──────────┘
-                        (DBA, Facebook, …)
-```
+This document is written from above the code. If a different harness, agent or person
+picks this up: the *point* is here, the *mechanics* are in the modules. Keep the
+point, replace the mechanics.
 
 ---
 
-## 1. The seam is one table
+## 1. One pipeline, modular stages — not a monolith
 
-The only shared state is an **item registry**. Keep it deliberately boring: a
-JSON file or a SQLite table, readable by both sides, writable by the listing side
-only. Messaging treats it as read-only input.
+The pipeline is a **sequence of stages, each a script with a single job**. A stage
+reads its input, does one thing, writes its output, exits. Stages meet through
+**files and rows, not through each other's internals**.
+
+```
+ capture  →  register  →  list    →  poll   →  draft  →  approve  →  send   →  verify
+ ad text     items      publish     inbox      reply     human       deliver   prove
+             .json
+```
+
+| Stage | Script | In | Out |
+|---|---|---|---|
+| capture | `messaging/capture_post.py` | URL / pasted text | ad fields |
+| register | `messaging/registry.py` | ad fields | `items.json` row |
+| list | `messaging/lane_listing.py` *(separate lane, same project)* | row | published ad, `status=listed` |
+| poll | `messaging/poll.py` | provider inbox | queued threads |
+| draft | `messaging/msgctl.py` | thread | draft awaiting approval |
+| approve | `msgctl.py` — human step | draft | approved text |
+| send | `msgctl.py` | approved text | delivered message |
+| verify | `notify.py` + provider API | delivery | confirmed record |
+
+**The rule that makes it modular:** a stage may only depend on the *format of the
+file it reads*. If a stage needs another stage's internals, the seam is wrong —
+widen the file, never the coupling.
+
+**Why modular matters here, concretely:** the listing lane is batch and human-paced;
+the messaging lane runs on a timer forever and must be silent when idle. A bug in one
+must not silence the other. Separate scripts give that for free; one monolith with a
+shared process does not.
+
+---
+
+## 2. The seam is one registry
+
+The only shared state is an **item registry** — a JSON file (`items.json`) or a
+SQLite table. Deliberately boring.
+
+- **The listing lane writes it.** That is the only writer.
+- **Everything else reads it.** Messaging treats it as read-only input.
 
 ```json
 {
   "provider": "dba",
-  "item_id": "25983773",
+  "item_id": "18961393",
   "title": "Rear Wheel / Baghjul - 28\", 7-Speed Rulle/Skivebremse",
   "price_dkk": 150,
   "status": "listed",
@@ -42,14 +67,9 @@ only. Messaging treats it as read-only input.
 }
 ```
 
-### Join key
-
-```
-(provider, item_id)
-```
-
-Nothing else. Not the conversation id, not the ad URL, not the title — those are
-provider-internal and change. `item_id` is stable for the life of the ad.
+**Join key: `(provider, item_id)`.** Nothing else — not the conversation id, not the
+ad URL, not the title. Those are provider-internal and change; `item_id` is stable for
+the life of the ad.
 
 ### Status vocabulary — five words, no synonyms
 
@@ -57,102 +77,121 @@ provider-internal and change. `item_id` is stable for the life of the ad.
 |---|---|
 | `draft` | not published yet — **never** poll or reply |
 | `listed` | live — normal handling |
-| `reserved` | live, someone committed — still reply, but do not sell twice |
+| `reserved` | live, someone committed — reply, but do not sell twice |
 | `sold` | **stop replying**; close open drafts |
 | `withdrawn` | stop replying; treat like sold |
 
-If the listing side invents a new status, messaging must treat unknown values as
-`listed` (fail open on messaging, fail closed on selling). Say the word and this
-rule changes, but it must be written down.
+Unknown values are treated as `listed` — fail open on messaging, fail closed on
+selling. If that rule changes, change it here in writing.
+
+**Read-only is a feature, not a permission bug.** If messaging could write the
+registry, two lanes could disagree about what is on sale and an item the human
+believes is sold stays listed. One writer, many readers.
 
 ---
 
-## 2. What the listing side must guarantee
+## 3. How it talks to a marketplace — access strategy
 
-Three promises, all cheap:
+Ordered by preference. Written as policy, because this is the part most likely to
+need adapting by whoever picks the project up.
 
-1. **Emit `item_id` at creation** — before or at the moment the ad goes live.
-2. **Emit status transitions** — `sold` must land within a minute of the sale, or
-   messy things happen (see below).
-3. **Keep the file/table readable without a lock held open** — atomic rename or a
-   WAL-mode SQLite, so a read never sees half an ad.
+**Primary — HTTP with an exported cookie jar.**
+Replay the same authenticated HTTP calls the browser makes, with cookies the human
+exported once. Headless, fast, scriptable, diffable, no browser needed. When it
+breaks, the failure is a status code — easy to read and easy to assert on.
 
-## 3. What the messaging side guarantees
+**Fallback — native CDP against a real browser.**
+Attach over the Chrome DevTools Protocol to a browser the harness controls. Use it
+when a flow genuinely cannot be replayed: JS-gated forms, anti-bot handshakes, pages
+that only work after real interaction.
 
-1. **Never sends without human approval.** Enforced in `msgctl approve`, not by
-   convention. There is no code path that sends an unapproved draft.
-2. **Verified delivery.** After a send, delivery is confirmed by re-reading the
-   marketplace API; an unverifiable send is reported as failed and is **never**
-   retried automatically, because a retry can duplicate a message.
-3. **Idempotent polling.** The same message never queues twice; keys are stable
+**Bootstrap — CDP is also how the cookie jar is obtained in the first place.**
+There is no jar on day one. Drive a browser over CDP, let the human log in, export the
+cookies, then run everything over HTTP. Cookies expire → re-bootstrap. This is the one
+place a browser is mandatory.
+
+**Harness note.** A harness that already owns a browser (Antigravity and similar agent
+runtimes) should launch **its own** Chromium for the CDP steps rather than borrowing
+the human's desktop session. That keeps the login flow inside the harness and removes
+a dependency on whatever the human happens to have open.
+
+**Never:** credentials or cookies in the repo. The jar lives outside the tree,
+referenced by path, readable only by the running user.
+
+---
+
+## 4. Guarantees
+
+**The listing lane must:** emit `item_id` at creation; emit status transitions
+promptly (`sold` within a minute); keep the registry readable without a held lock
+(atomic rename, or WAL-mode SQLite).
+
+**The messaging lane must:**
+
+1. **Never send without human approval** — enforced in `msgctl approve`, not by
+   convention. No code path sends an unapproved draft.
+2. **Verify delivery** by re-reading the provider API. An unverifiable send is
+   reported as failed and is **never** retried automatically — a retry can duplicate
+   a message.
+3. **Poll idempotently** — the same message never queues twice; keys are stable
    hashes, not process-local values.
-4. **No login automation.** If a session dies, it raises and waits for a human.
+4. **Not automate login.** If a session dies, it raises and waits for a human.
+5. **Stay silent and free when idle** — polling is a cheap conditional check; the
+   model wakes only when something changed.
 
 ---
 
-## 4. Why this split is the right one
-
-**Different failure modes.** Listing is batch, human-paced, and a mistake costs a
-mis-priced ad — annoying but fixable. Messaging is real-time, talks to strangers,
-and a mistake sends a wrong price or a wrong promise to a real buyer. They should
-not share a deploy, a process, or a crash.
-
-**Different cadence.** Listing runs when Jacob publishes. Messaging runs on a
-timer, forever, and must be silent when idle. Coupling them means a listing bug
-silences the inbox.
-
-**Different trust.** Messaging needs a credential that can speak as him. Listing
-needs one that can publish. Keeping them in separate processes with separate
-cookie files limits what one leak can do.
-
-**Different reusability.** Friends will wire this to *their* marketplaces with
-*their* browsers. A single repo that does everything is one they cannot partially
-adopt. The seam above lets someone take messaging only — which is the more useful
-half on its own.
-
----
-
-## 5. How a sale actually flows across the seam
+## 5. How a sale flows
 
 ```
-buyer writes           messaging: poll queues it
+buyer writes           poll queues it
       │
       ▼
-draft ──▶ Jacob approves ──▶ send (verified)
+draft ──▶ human approves ──▶ send (verified)
       │
       │ buyer commits to buy
       ▼
-Jacob marks sold       listing side writes status=sold
+human marks sold       listing lane writes status=sold
       │
       ▼
 messaging sees sold    closes open drafts, stops queueing new ones
-                       (a "still available?" message after a sale is the
-                        single worst message to send — hence promise #2)
 ```
 
-The gap between "sold in the real world" and "`status=sold` on disk" is the only
-dangerous window in the whole design. That is why the listing side must emit the
-transition promptly rather than on the next full sync.
+The gap between "sold in the real world" and `status=sold` on disk is the only
+dangerous window in the design. A "still available?" message after a sale is the
+worst message this system can send — hence the prompt-transition guarantee.
 
 ---
 
 ## 6. Adding a marketplace
 
-Both sides add a provider; neither touches the other. On the messaging side that
-is `providers/<name>.py` implementing six methods (`providers/base.py`). The seam
+Add a provider; change nothing else. On the messaging side that is
+`providers/<name>.py` implementing the six methods in `providers/base.py`. The seam
 does not change: still `(provider, item_id)`, still five statuses.
 
 ---
 
-## 7. Open questions for the merge discussion
+## 7. Open questions
 
-- **Who owns the registry file?** Proposal: listing side writes, messaging reads.
-  If messaging ever needs to write (e.g. "buyer asked a question, flag the ad"),
-  it writes a *separate* sidecar file, not the registry.
-- **Sold detection fallback.** If the listing side is down, should messaging infer
-  `sold` from the marketplace (ad no longer found)? Proposal: yes, but only as a
-  warning to Jacob — never silently.
-- **Multi-listing threads.** One conversation can span two ads (buyer asks about
-  two wheels). Today messaging keys on conversation; the registry lookup must
-  tolerate a conversation touching several `item_id`s.
-- **Where drafts live.** Messaging owns them. Listing must never write a message.
+- **Registry ownership** — listing writes, everything else reads. If messaging ever
+  needs to record something about an item, it writes a *sidecar* file, never the
+  registry.
+- **Sold detection when the listing lane is down** — infer from the marketplace (ad
+  gone) as a *warning to the human* only, never silently.
+- **Multi-listing threads** — one conversation can span two ads; registry lookup must
+  tolerate several `item_id`s per conversation.
+- **Where drafts live** — messaging owns them. Listing must never write a message.
+
+---
+
+## 8. Picking this up as a different harness
+
+Read in this order: §1 for the shape, §2 for the contract, §3 for access, §4 for the
+limits. Then replace any single stage without reading the rest.
+
+**Preserve:** the stage boundaries, the registry contract, the approval gate, and the
+prove-the-send rule.
+
+**Free to replace:** the provider adapter, the storage backend (JSON ↔ SQLite), the
+notification channel, the transport (HTTP ↔ CDP), and the language each stage is
+written in.
