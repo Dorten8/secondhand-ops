@@ -194,7 +194,9 @@ flowchart TB
     DEC -->|"send as is"| SEND
     DEC -->|"send my text"| SEND
     DEC -->|"ignore"| DROP["close the thread<br/>no message sent"]:::b
-    DEC -->|"different"| DRAFT
+    DEC -->|"anything else"| FREE["whatever the human wants<br/>redraft · answer a side question<br/>mark sold · chase another thread · stop"]:::b
+    FREE --> DRAFT
+    FREE --> DROP
     SEND["send, then verify against<br/>the marketplace API"]:::b --> VER{"is our text now<br/>the last outgoing one?"}:::d
     VER -->|"yes"| OKDONE[("done")]:::ext
     VER -->|"no"| HARDSTOP["report failed — never retry<br/>a duplicate reaches a real person"]:::b
@@ -205,7 +207,14 @@ flowchart TB
 ```
 
 **Contract:** the human is the only sender. The system's job is to make deciding
-fast — a draft, the context, four options — and to prove what actually left.
+fast — a draft, the context, and a short list of shortcuts — and to prove what
+actually left.
+
+**The four options are shortcuts, not a closed set.** They cover the common cases
+so the usual reply is one keystroke, but the human can always say something else,
+and that answer is treated as an instruction to the agent rather than as an
+invalid choice. Anything that ends up as "send" goes through the same verification;
+anything that does not, sends nothing.
 
 > **In this implementation:** `src/conversations/poll.py` is the trigger; drafts and
 > approvals go through `src/conversations/msgctl.py`, and replies are handed to the
