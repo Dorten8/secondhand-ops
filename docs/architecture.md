@@ -1,225 +1,305 @@
 # Architecture
 
-Second-hand marketplace ops, end to end: **materials in → listings out → buyer
-conversations handled → item marked sold**, with a human approving anything that
-reaches a stranger.
+How materials become listings, and how messages about those listings get answered
+without a human typing every reply.
 
-Every top-level directory under `src/` is a **node in the diagram below**, and the
-directory name is identical to the node name. If you are looking at a folder, you
-can find it in the diagram; if you are looking at a node, you know the folder.
-
-| node | directory | one line |
-|---|---|---|
-| `intake` | `src/intake/` | turn voice memos, photos and text into a structured item folder |
-| `catalog` | `src/catalog/` | build the item catalogue and the relations between items |
-| `publishing` | `src/publishing/` | push listings to each marketplace and keep them in sync |
-| `conversations` | `src/conversations/` | read buyer messages, draft, get approval, send, verify |
-| `registry` | `src/registry/` | the single seam both halves agree on, plus the Notion mirror |
-| `auth` | `src/auth/` | marketplace sessions — human logins only, never automated |
+**The top diagram has five stages.** Each stage boundary marked `║` in the
+diagram is a section below, where that stage is opened up. Names in the top
+diagram are **generic** — no marketplace, chat app or database is named there.
+Every section then says *"in this implementation"* and names the exact scripts,
+because the abstractions are only useful if the concrete version is one step away.
 
 ---
 
-## 1. End-to-end pipeline
+## 0. Overall architecture
 
 ```mermaid
 flowchart LR
-    H(["Jacob<br/>human"]):::human
+    H(["Human"]):::human
+    REG["1 · Registration<br/>capture materials"]:::stage
+    CONF["2 · Confirmation<br/>LLM checks, human approves"]:::stage
+    DB[("3 · Database<br/>single source of truth")]:::stage
+    UPL["4 · Upload<br/>publish listings"]:::stage
+    HAND["5 · Handling<br/>questions about listings"]:::stage
+    EXT[["Marketplace(s)"]]:::ext
 
-    subgraph intake["intake/"]
-        I1["Telegram bot<br/>voice · photo · text"]
-        I2["transcribe.py<br/>Whisper, local"]
-        I3["item folder<br/>transcription · metadata · photos"]
-        I1 --> I2 --> I3
-    end
-
-    subgraph catalog["catalog/"]
-        C1["build_catalog.py<br/>structured listing dict"]
-        C2["inventory_relations.py<br/>wheelset ↔ wheel links"]
-        C3["catalog.py · inventory.py"]
-        C1 --> C3
-        C2 --> C3
-    end
-
-    subgraph publishing["publishing/"]
-        P1["batch_publisher.py<br/>post to DBA + FB"]
-        P2["fix_past_dba_listings.py<br/>repair live ads"]
-        P3["update_crosslinks_dba.py<br/>crosslinks in descriptions"]
-        P4["providers/<br/>dba.py · fb.py"]
-        P1 --> P4
-        P2 --> P4
-        P3 --> P4
-    end
-
-    subgraph registry["registry/"]
-        R1["items.json<br/>status · item_id · price"]
-        R2["notion_ssot.py<br/>human-readable mirror"]
-        R1 -.-> R2
-    end
-
-    subgraph conversations["conversations/"]
-        M1["poll.py<br/>zero tokens, silent"]
-        M2["draft<br/>LLM, the only paid stage"]
-        M3["approval gate<br/>msgctl approve"]
-        M4["send<br/>verified against the API"]
-        M5["providers/<br/>dba.py · fb.py"]
-        M6["extractors/<br/>DOM fallbacks"]
-        M1 --> M2 --> M3 --> M4 --> M5
-        M6 -.-> M2
-    end
-
-    subgraph auth["auth/"]
-        A1["login_marketplace.py<br/>headed, human-driven"]
-        A2["import_cookies.py<br/>cookie jar"]
-    end
-
-    MK[["Marketplaces<br/>DBA · Facebook"]]:::ext
-
-    H -->|"voice memo"| I1
-    I3 --> C1
-    C3 --> P1
-    P1 --> MK
-    MK -->|"buyer message"| M1
-    R1 -->|"sold ⇒ stop replying"| M1
-    P4 -->|"item_id after publish"| R1
-    A1 --> A2 --> P4
-    A2 --> M5
-    M3 <-->|"approve / ignore / rewrite"| H
-    M4 --> MK
-    MK -->|"replies"| M1
+    H -->|"voice · photo · text"| REG
+    REG --> CONF
+    CONF -->|"human says yes"| DB
+    CONF -.->|"missing something"| H
+    DB --> UPL
+    UPL --> EXT
+    EXT -->|"incoming messages"| HAND
+    DB -->|"which items are still live"| HAND
+    HAND -->|"draft + approval"| H
+    H -->|"approve / edit / ignore"| HAND
+    HAND --> EXT
 
     classDef human fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef stage fill:#161b22,stroke:#8b949e,color:#fff
     classDef ext fill:#30363d,stroke:#8b949e,color:#fff
 ```
 
-**Reading it as a pipeline of packages:** `intake` produces an item folder →
-`catalog` turns folders into a catalogue → `publishing` puts the catalogue on the
-marketplaces and writes `item_id` back into `registry` → `conversations` polls the
-marketplaces for buyer messages, drafts, waits for the human, sends, and reads
-`registry` so a sold item stops being answered.
+Read it as: **the human only ever does two things — hand over materials, and
+approve what leaves.** Everything between is mechanical and deterministic, which
+is why it can be scripted; the two points where judgement is required are the two
+places an LLM is allowed to spend tokens.
+
+| stage | input | output | judgement? |
+|---|---|---|---|
+| 1 Registration | voice, photos, text | raw materials per item | no |
+| 2 Confirmation | raw materials | a checked record, or a question back | **LLM** |
+| 3 Database | checked record | one row, atomic, readable by everything | no |
+| 4 Upload | rows marked ready | live listings with external ids | no |
+| 5 Handling | incoming messages | replies, only after approval | **LLM** |
+
+**Where the borders are:** each `→` in the top diagram is a hard boundary — a
+file, a row, or a message. Never a function call. A stage can be rewritten,
+restarted or replaced without touching its neighbours, which is what lets a
+friend swap one marketplace and keep the rest.
 
 ---
 
-## 2. `conversations` — the stage worth understanding
-
-The only stage that spends tokens, and the only one allowed to talk to a stranger.
+## 1. Registration — capture materials
 
 ```mermaid
-stateDiagram-v2
-    [*] --> polled: poll.py · zero tokens
-    polled --> queued: buyer spoke last<br/>status = listed
-    polled --> skipped: we spoke last<br/>or sold or stale
+flowchart LR
+    H(["Human"]):::human
+    CHAT["chat bot<br/>voice · photo · text"]:::b
+    ASR["transcribe<br/>local, offline"]:::b
+    FOLDER["item folder<br/>audio · photos · transcription · notes"]:::b
 
-    queued --> drafted: LLM writes one reply
-    drafted --> pending: recorded in the queue (SQLite)
-    pending --> sent: human approves
-    pending --> ignored: human ignores
-    pending --> superseded: human rewrites<br/>→ new pending draft
+    H --> CHAT --> ASR --> FOLDER
+    H -->|"photos"| FOLDER
+    H -->|"text"| FOLDER
 
-    sent --> verified: API confirms<br/>lastMessageOutgoing = true
-    verified --> [*]
-    sent --> failed: cannot prove delivery
-    failed --> pending: human retries deliberately
-
-    skipped --> [*]
+    classDef human fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef b fill:#161b22,stroke:#8b949e,color:#fff
 ```
 
-Five rules that are code, not intentions:
+**Contract:** one item = one folder. Nothing is interpreted here — no prices, no
+titles, no guessing. If the human sends three photos and a voice memo, that is
+exactly what lands on disk.
 
-1. **Prime on first run** — an empty store records history and queues nothing.
-2. **Age filter** — 14 days; a December thread is not news.
-3. **Report the whole open queue** — a crashed drafting run cannot orphan a thread.
-4. **Approval gate** — a draft leaves `pending` exactly once; deciding twice is refused.
-5. **No auto-retry on an unverified send** — a retry can duplicate a message to a real person.
+> **In this implementation:** the human messages a Telegram bot with voice notes,
+> photos or text. `src/intake/transcribe.py` runs Whisper locally (CPU, no API
+> key, no upload) and writes `transcription.txt` next to the audio. A worked
+> example folder is committed at `examples/items/P01/`.
 
 ---
 
-## 3. `registry` — the seam
+## 2. Confirmation — the LLM checks, the human decides
 
-`items.json` is the only thing `publishing` and `conversations` share.
+```mermaid
+flowchart TB
+    FOLDER["item folder"]:::b --> CHECK{"enough to list<br/>it?"}:::d
+    CHECK -->|"no"| ASK["ask the human<br/>for the specific gap"]:::b
+    ASK --> H(["Human answers"]):::human
+    H --> FOLDER
+    CHECK -->|"yes"| PREREQ["check the required fields<br/>title · price · condition<br/>photos · pickup · category"]:::b
+    PREREQ --> RECORD["structured record<br/>status = draft"]:::b
+    RECORD --> OK{"human confirms?"}:::d
+    OK -->|"no"| ASK
+    OK -->|"yes"| OUT[("to stage 3")]:::ext
 
-```json
-{"provider":"dba","item_id":"25983773","title":"Rear Wheel / Baghjul - 28\"",
- "price_dkk":150,"status":"listed","ad_url":"https://www.dba.dk/my-items/details/18961393",
- "created_at":"2026-10-24T09:12:00Z","status_changed_at":"2026-10-24T09:12:00Z"}
+    classDef human fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef b fill:#161b22,stroke:#8b949e,color:#fff
+    classDef d fill:#3d2b00,stroke:#d29922,color:#fff
+    classDef ext fill:#30363d,stroke:#8b949e,color:#fff
 ```
 
-- **Join key:** `(provider, item_id)`. Nothing else — not the ad URL, not the title.
-- **Statuses:** `draft · listed · reserved · sold · withdrawn`. Unknown values fail open for messaging and closed for selling.
-- **Written by** `publishing` (atomically, via `os.replace`). **Read by** `conversations`, statelessly, once per tick.
-- **`item_id` is only known after publish** — DBA assigns `itemInfo.itemId`. Rows with `status=draft` or `item_id=null` are skipped, never guessed.
+**Contract:** this is the first place tokens are spent, and the only place where
+the human is asked a question about an item. The required-fields list is
+**configuration, not prompt text** — a marketplace that needs different fields
+changes the list, not the model.
 
-The dangerous window is between "sold in the real world" and `status=sold` on disk.
-A "still available?" message *after* a sale is the worst message this system can
-send, which is why the transition must land within a minute.
+**Why the human confirms:** an LLM can misread a size, a groupset, a
+compatibility. Those errors are cheap to catch now and expensive after a buyer
+has driven across town.
+
+> **In this implementation:** the agent that owns the chat bot reads the folder,
+> extracts title/price/specs, and asks for anything missing. The field list lives
+> with the catalogue stage (`src/catalog/`), and the human's confirmation is a
+> plain reply in the same chat — no forms, no UI.
 
 ---
 
-## 4. Worked example — the bike parts, as actually sold
+## 3. Database — one row, one truth
 
-This is not a hypothetical. It is what ran on 2026-10-31.
+```mermaid
+flowchart LR
+    RECORD["confirmed record"]:::b --> WRITE["writer<br/>atomic replace"]:::b
+    WRITE --> SOT[("source of truth<br/>one row per listing")]:::db
+    SOT --> MIRROR["human-readable mirror<br/>optional"]:::b
+    SOT --> R4[("stage 4")]:::ext
+    SOT --> R5[("stage 5")]:::ext
+
+    classDef b fill:#161b22,stroke:#8b949e,color:#fff
+    classDef db fill:#0d2818,stroke:#3fb950,color:#fff
+    classDef ext fill:#30363d,stroke:#8b949e,color:#fff
+```
+
+**Contract — the join key is `(provider, item_id)` and nothing else.** Not a URL,
+not a title: those change or duplicate. Statuses are exactly five words —
+`draft · listed · reserved · sold · withdrawn` — and an unknown status fails
+**open** for messaging (answer anyway) and **closed** for selling (never double-sell).
+
+**Writes happen in one place only.** Every other stage reads. That asymmetry is
+what makes the whole thing debuggable: if a row is wrong, one writer wrote it.
+
+> **In this implementation:** the source of truth is a Notion page database,
+> mirrored into `items.json` by `src/registry/notion_ssot.py`; the store itself
+> is `src/registry/registry.py`, writing atomically via `os.replace` so a reader
+> sees either the old file or the new one, never half a row. Stage 5 gets a
+> **read-only** door to it (`src/conversations/registry.py`) — the messaging side
+> is structurally incapable of writing the seam.
+
+---
+
+## 4. Upload — put it on the marketplace and get an id back
+
+```mermaid
+flowchart TB
+    ROWS[("rows: status = draft")]:::db --> PREP["prepare per-marketplace copy<br/>language · units · category · rules"]:::b
+    PREP --> CRED["credentials<br/>human login once, session reused"]:::b
+    CRED --> POST["post listing"]:::b
+    POST --> GOT{"marketplace<br/>returns an id?"}:::d
+    GOT -->|"yes"| BACK["write item_id + status = listed"]:::b
+    GOT -->|"no"| FAIL["report which listing failed<br/>keep the rest"]:::b
+    BACK --> DONE[("stage 5 can now answer<br/>about this item")]:::ext
+
+    classDef b fill:#161b22,stroke:#8b949e,color:#fff
+    classDef db fill:#0d2818,stroke:#3fb950,color:#fff
+    classDef d fill:#3d2b00,stroke:#d29922,color:#fff
+    classDef ext fill:#30363d,stroke:#8b949e,color:#fff
+```
+
+**Contract:** `item_id` is usually **only known after publishing** — the
+marketplace assigns it. Until then the row has no join key, and stage 5 must skip
+it rather than guess which item a buyer means.
+
+Two rules that cost real money to learn: publish in a batch but **record per
+listing**, so one failure does not orphan the others; and never claim a listing
+exists because a request returned success — re-read it.
+
+> **In this implementation:** `src/publishing/batch_publisher.py` posts to DBA and
+> Facebook through `src/publishing/providers/`. Credentials come from a **human
+> login done once** in a headed browser (`src/auth/login_marketplace.py`), then a
+> cookie jar imported by `src/auth/import_cookies.py`; no credential is ever
+> automated. DBA returns `itemInfo.itemId`, which is written straight back into
+> the registry. Live-ad repairs are `fix_past_dba_listings.py` and
+> `update_crosslinks_dba.py`.
+
+---
+
+## 5. Handling — messages in, approved replies out
+
+```mermaid
+flowchart TB
+    TRIG["trigger<br/>cheap, silent, no model"]:::b --> NEW{"anyone waiting<br/>on us?"}:::d
+    NEW -->|"no"| QUIET["print nothing<br/>exit 0"]:::b
+    NEW -->|"yes"| CTX["build the minimum context<br/>last message + item facts"]:::b
+    CTX --> DRAFT["draft one reply<br/>the only token spend"]:::b
+    DRAFT --> NOTIFY["show it to the human<br/>with explicit options"]:::b
+    NOTIFY --> DEC{"human decides"}:::d
+    DEC -->|"send as is"| SEND
+    DEC -->|"send my text"| SEND
+    DEC -->|"ignore"| DROP["close the thread<br/>no message sent"]:::b
+    DEC -->|"different"| DRAFT
+    SEND["send, then verify against<br/>the marketplace API"]:::b --> VER{"is our text now<br/>the last outgoing one?"}:::d
+    VER -->|"yes"| OKDONE[("done")]:::ext
+    VER -->|"no"| HARDSTOP["report failed — never retry<br/>a duplicate reaches a real person"]:::b
+
+    classDef b fill:#161b22,stroke:#8b949e,color:#fff
+    classDef d fill:#3d2b00,stroke:#d29922,color:#fff
+    classDef ext fill:#30363d,stroke:#8b949e,color:#fff
+```
+
+**Contract:** the human is the only sender. The system's job is to make deciding
+fast — a draft, the context, four options — and to prove what actually left.
+
+> **In this implementation:** `src/conversations/poll.py` is the trigger; drafts
+> and approvals go through `src/conversations/msgctl.py`, and replies are handed
+> to the human on Telegram by `notify.py` with the four options
+> `1 send as is · 2 send what I write · 3 ignore · 4 other`. Sending is
+> `providers/dba.py::send`, and it verifies by re-reading the API — a 200 is not
+> accepted as proof. Exact endpoints and the three rules for trusting a send are
+> in [`DBA-API.md`](DBA-API.md).
+
+---
+
+## 6. Why this burns few tokens
+
+The design rule: **anything deterministic is a script; the model only judges.**
+
+| step | cost | how |
+|---|---|---|
+| trigger | **0** | one authenticated HTTP GET, prints nothing when nothing is new |
+| change detection | **0** | a hash of the trigger's own output — identical output means the agent never wakes |
+| dedupe | **0** | content hashes in SQLite, so a re-poll cannot re-queue |
+| state | **0** | SQLite; nothing lives in a prompt, no context is re-sent to remember |
+| draft | **one short call** | only the last message plus the item facts, not the whole history |
+| approval | **0** | four fixed options; the human's answer is routed by a state machine, not by parsing prose |
+| send + verify | **0** | HTTP request, then a read to confirm |
+
+The expensive failure mode in systems like this is not the model — it is waking it
+every few minutes to re-read the world. Here the world is polled by a script and
+the model is woken only when the script's output *changes*.
+
+---
+
+## 7. Worked example — the bike parts, as actually sold
+
+Real run, 2026-10-31. The generic stages from §0, with this implementation's names.
 
 ```mermaid
 sequenceDiagram
-    actor J as Jacob
-    participant I as intake
-    participant C as catalog
-    participant P as publishing
-    participant R as registry
-    participant M as marketplaces
-    participant V as conversations
-    actor B as Buyer
+    actor J as Human
+    participant R as 1 Registration
+    participant C as 2 Confirmation
+    participant D as 3 Database
+    participant U as 4 Upload
+    participant M as Marketplace
+    participant H as 5 Handling
 
-    J->>I: voice memo + photos (Telegram)
-    I->>I: transcribe.py → transcription.txt
-    I->>C: item folder
-    C->>C: build catalogue + wheelset relations
-    C->>P: 46 listings
-    P->>M: publish (DBA + FB)
-    M-->>P: item_id 18961393
-    P->>R: status=listed, item_id set
+    J->>R: voice memo + photos (chat)
+    R->>R: transcribe locally → item folder
+    C->>J: "which rim size? I see 28\" but no width"
+    J-->>C: answers
+    C->>D: confirmed record, status=draft
+    J-->>D: confirms
+    D->>U: row is ready
+    U->>M: publish
+    M-->>U: item_id 18961393
+    U->>D: item_id + status=listed
 
-    B->>M: “jeg mangler netop sådan et baghjul… bor i Odense?”
-    V->>M: poll.py (one HTTP GET, zero tokens)
-    M-->>V: lastMessageOutgoing=false → buyer spoke last
-    V->>V: draft reply (the only token spend)
-    V->>J: draft + four options
-    J-->>V: “send as is”
-    V->>M: POST …/conversations/{id}/messages
-    M-->>V: verified — our text is now the last outgoing message
-    V->>J: sent, confirmed
+    M-->>H: buyer: "I need exactly that rear wheel — I'm in Odense?"
+    H->>H: poll (no tokens), buyer spoke last
+    H->>H: draft one reply (the only spend)
+    H->>J: draft + four options
+    J-->>H: "send as is"
+    H->>M: send
+    M-->>H: our text is the last outgoing message → verified
+    H->>J: confirmed sent
 
-    B->>J: collects, pays
-    J->>P: mark sold
-    P->>R: status=sold
-    R-->>V: sold ⇒ stop queueing replies
+    J->>D: sold
+    D-->>H: sold ⇒ stop queueing replies for this item
 ```
 
 ---
 
-## 5. Failure contract
+## 8. Where each stage lives
 
-Each stage fails in a way the next stage can see, never silently.
+Directories are named after the stage they implement, so the diagram and the tree
+agree. Two directories serve one stage where the work genuinely splits.
 
-| stage | on failure | what it must NOT do |
+| stage | directories | entry points |
 |---|---|---|
-| `intake` | leaves the item folder marked incomplete | invent a transcription |
-| `catalog` | refuses to emit a half-built record | write a partial item |
-| `publishing` | reports the ad that failed, keeps the rest | claim a listing exists |
-| `conversations` poll | one line to stderr, exit 2 | wake the agent or message a human |
-| `conversations` send | reports **failed**, records why | auto-retry, or claim success |
-| `registry` | fails open for messaging, closed for selling | crash both halves |
+| 1 Registration | `src/intake/` | `transcribe.py` |
+| 2 Confirmation | `src/catalog/` | `build_catalog.py`, `inventory_relations.py` |
+| 3 Database | `src/registry/` | `registry.py`, `notion_ssot.py` |
+| 4 Upload | `src/publishing/` | `listctl.py`, `batch_publisher.py`, `providers/` |
+| 5 Handling | `src/conversations/` | `poll.py`, `msgctl.py`, `providers/` |
+| credentials (cross-cutting) | `src/auth/` | `login_marketplace.py`, `import_cookies.py` |
 
----
-
-## 6. Adding a marketplace
-
-One provider file per stage, never a change to the pipeline:
-
-```
-src/publishing/providers/<name>.py     # post an ad
-src/conversations/providers/<name>.py  # read threads, send a message
-```
-
-`providers/base.py` in each defines the methods. Facebook is stubbed in
-`conversations/providers/fb.py` with the traps documented inline (virtualised
-inbox, per-load `fb_dtsg`/LSD tokens, hard login wall).
+Adding a marketplace touches `providers/` in stages 4 and 5 and nothing else.

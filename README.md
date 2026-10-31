@@ -50,14 +50,17 @@ two must be able to fail separately.
 
 ```mermaid
 flowchart LR
-    H(["human"]):::human
-    I["intake"] --> C["catalog"] --> P["publishing"] --> MK[["marketplaces"]]:::ext
-    MK -->|buyer message| V["conversations"]
-    P -->|item_id after publish| R[("registry")]
-    R -->|sold ⇒ stop replying| V
-    V <-->|approve / ignore / rewrite| H
-    A["auth"] -.->|session| P
-    A -.->|session| V
+    H(["Human"]):::human
+    REG["1 Registration"]:::stage --> CONF["2 Confirmation"]:::stage
+    CONF -->|"human confirms"| DB[("3 Database")]:::stage
+    DB --> UPL["4 Upload"]:::stage --> MK[["Marketplaces"]]:::ext
+    MK -->|"messages"| HAND["5 Handling"]:::stage
+    DB -->|"still live?"| HAND
+    HAND <-->|"approve / edit / ignore"| H
+
+    classDef human fill:#1f6feb,stroke:#0b3d91,color:#fff
+    classDef stage fill:#161b22,stroke:#8b949e,color:#fff
+    classDef ext fill:#30363d,stroke:#8b949e,color:#fff
 ```
 
 Full diagram, per-stage contracts and the conversations state machine:
