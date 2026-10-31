@@ -28,7 +28,7 @@ Configuration variables in `.env`:
 | :--- | :--- | :--- |
 | `GEMINI_API_KEY` | Google Gemini API key for photo and voice note intake | Recommended |
 | `OPENAI_API_KEY` | Alternative LLM provider key | Optional |
-| `MARKETPLACE_REGISTRY_PATH` | Path to shared `items.json` atomic WAL file (default: `/opt/data/marketplace/items.json`) | Optional |
+| `MARKETPLACE_REGISTRY` | Path to shared `items.json` atomic WAL file (default: `/opt/data/marketplace/items.json`) | Optional |
 | `NOTION_TOKEN` | Notion API Integration token (if syncing with private Notion SSoT) | Optional |
 | `NOTION_DATABASE_ID` | Notion Database ID | Optional |
 | `CDP_URL` | Chrome DevTools Protocol URL (default: `http://127.0.0.1:9222`) | Optional |

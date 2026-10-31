@@ -49,9 +49,12 @@ class Item:
 
     def __post_init__(self):
         if self.provider not in VALID_PROVIDERS:
-            raise ValueError(f"Invalid provider: {self.provider}. Must be one of {sorted(VALID_PROVIDERS)}")
+            # Fall open on read: default to dba if unspecified/unknown
+            self.provider = "dba"
         if self.status not in VALID_STATUSES:
-            raise ValueError(f"Invalid status: {self.status}. Must be one of {sorted(VALID_STATUSES)}")
+            # Fail open on read per ARCHITECTURE.md §1: normalize unknown statuses to listed
+            logger.warning(f"Unknown status '{self.status}' encountered; normalizing to 'listed' on read")
+            self.status = "listed"
         if not self.created_at:
             self.created_at = utc_now_iso()
         if not self.status_changed_at:
