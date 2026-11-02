@@ -20,7 +20,8 @@ believed until the marketplace's own API confirms it.
 
 | # | file | why |
 |---|---|---|
-| 1 | `docs/architecture.md` | the diagrams; every node is a directory here |
+| 1 | `docs/COMMS.md` — how a message reaches a human, and why there is no default topic | routing bugs, wrong-thread complaints |
+| `docs/architecture.md` | the diagrams; every node is a directory here |
 | 2 | `src/conversations/poll.py` | the zero-token trigger; the whole contract in one file |
 | 3 | `src/conversations/providers/dba.py` | the reference provider: read over HTTP, send with proof |
 | 4 | `src/registry/registry.py` + `src/conversations/registry.py` | the seam, and why one side is read-only |

@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""say — the single door for anything an agent wants to put in front of Jakub.
+
+    say --kind buyer_message --text "…"          # -> Inbox (13), by content kind
+    say --topic gets --text-file /tmp/out.md     # -> Gets (10), by explicit topic
+    say --kind ops --text "backup ok"            # -> logged, never posted
+    say --list                                   # the map, read-only
+    say --kind buyer_message --text "…" --dry-run # resolve + print, send nothing
+
+There is **no default destination**. Omitting --kind/--topic is an error, because
+a default is how a buyer message ends up in the Development thread. An unknown
+kind is an error too: add it to ROUTES in src/shared/topics.py once, and every
+caller of that kind is then correct forever.
+
+Every accepted delivery is appended to ~/hermes/home/deliveries.jsonl so a
+misroute can be found afterwards by reading what was sent where, instead of by
+remembering what an agent thought it did.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+# works from the repo (../src/shared) and from a flat scripts/ dir where
+# topics.py sits next to this file
+for cand in (HERE.parent / "src", HERE):
+    if str(cand) not in sys.path:
+        sys.path.insert(0, str(cand))
+
+try:                                                    # repo layout
+    from shared.topics import (CHAT_ID, PolicyRefusal, UnknownTopic,  # noqa: E402
+                               describe, resolve)
+except ModuleNotFoundError:                             # flat scripts/ layout
+    from topics import (CHAT_ID, PolicyRefusal, UnknownTopic,         # noqa: E402
+                        describe, resolve)
+
+ENV_FILE = Path(os.environ.get("HERMES_ENV_FILE", "/home/hermes/hermes/home/.env"))
+LOG_FILE = Path(os.environ.get("SAY_LOG", "/home/hermes/hermes/home/deliveries.jsonl"))
+API = "https://api.telegram.org"
+MAX_CHARS = 4096
+
+
+def bot_token() -> str:
+    """Read the token from the env file. Never accept it as an argument: an argv
+    token ends up in shell history and in `ps`."""
+    if os.environ.get("TG_TOKEN_FILE"):
+        return Path(os.environ["TG_TOKEN_FILE"]).read_text().strip()
+    txt = ENV_FILE.read_text(encoding="utf-8", errors="replace")
+    m = re.search(r"^TELEGRAM_BOT_TOKEN=(.+)$", txt, re.M)
+    if not m:
+        raise RuntimeError(f"TELEGRAM_BOT_TOKEN not found in {ENV_FILE}")
+    return m.group(1).strip().strip('"').strip("'")
+
+
+def split_message(text: str, limit: int = MAX_CHARS) -> list[str]:
+    """Telegram rejects >4096 with 'message is too long', which reads like an auth
+    bug. Split on paragraph boundaries, then hard-split anything still too big."""
+    text = text.rstrip()
+    if len(text) <= limit:
+        return [text]
+    parts, cur = [], ""
+    for block in text.split("\n\n"):
+        while len(block) > limit:                     # a single huge block
+            parts.append(block[:limit])
+            block = block[limit:]
+        if len(cur) + len(block) + 2 > limit:
+            parts.append(cur.rstrip())
+            cur = block
+        else:
+            cur = f"{cur}\n\n{block}" if cur else block
+    if cur.strip():
+        parts.append(cur.rstrip())
+    return [p for p in parts if p.strip()]
+
+
+def post(thread: int, text: str, token: str) -> list[int]:
+    ids = []
+    for part in split_message(text):
+        payload = {"chat_id": CHAT_ID, "text": part,
+                   "disable_web_page_preview": True,
+                   "message_thread_id": thread}
+        req = urllib.request.Request(
+            f"{API}/bot{token}/sendMessage",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"})
+        try:
+            res = json.load(urllib.request.urlopen(req, timeout=25))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode(errors="replace")
+            raise RuntimeError(f"Telegram rejected the send: {exc.code} {body[:300]}") from exc
+        if not res.get("ok"):
+            raise RuntimeError(f"Telegram said not-ok: {res}")
+        ids.append(res["result"]["message_id"])
+    return ids
+
+
+def audit(rec: dict) -> None:
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with LOG_FILE.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError as exc:                            # logging must never block a send
+        print(f"warn: could not write {LOG_FILE}: {exc}", file=sys.stderr)
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(description="Send to the right topic, or not at all.")
+    ap.add_argument("--kind", help="what the message IS (buyer_message, shopping, ops…)")
+    ap.add_argument("--topic", help="explicit topic key, when kind is not specific enough")
+    ap.add_argument("--text")
+    ap.add_argument("--text-file")
+    ap.add_argument("--allow-personal", action="store_true")
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--list", action="store_true")
+    a = ap.parse_args(argv)
+
+    if a.list:
+        print(describe())
+        return 0
+
+    if not a.kind and not a.topic:
+        print("refusing: pass --kind <what it is> or --topic <where it goes>. "
+              "There is no default destination — see `say --list`.", file=sys.stderr)
+        return 2
+
+    if a.text is None and a.text_file is None:
+        text = sys.stdin.read()
+    elif a.text_file:
+        text = Path(a.text_file).read_text(encoding="utf-8")
+    else:
+        text = a.text
+
+    if not text or not text.strip():
+        print("refusing: empty message", file=sys.stderr)
+        return 2
+
+    try:
+        chat, thread = resolve(a.kind or a.topic, allow_personal=a.allow_personal)
+    except (UnknownTopic, PolicyRefusal) as exc:
+        print(f"refusing: {exc}", file=sys.stderr)
+        return 3
+
+    rec = {"ts": dt.datetime.now().isoformat(timespec="seconds"),
+           "kind": a.kind, "topic": a.topic, "thread": thread,
+           "chars": len(text), "dry_run": a.dry_run}
+
+    if thread is None:
+        audit({**rec, "result": "logged_only"})
+        print(f"logged only (no topic for {a.kind or a.topic!r}) — nothing posted")
+        return 0
+
+    if a.dry_run:
+        audit({**rec, "result": "dry_run"})
+        print(f"would send {len(text)} chars -> chat {chat} thread {thread}")
+        return 0
+
+    try:
+        ids = post(thread, text, bot_token())
+    except Exception as exc:
+        audit({**rec, "result": "failed", "error": str(exc)[:300]})
+        print(f"send failed: {exc}", file=sys.stderr)
+        return 4
+
+    audit({**rec, "result": "sent", "message_ids": ids})
+    print(f"sent to thread {thread}: {', '.join(map(str, ids))}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

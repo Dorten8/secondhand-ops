@@ -91,6 +91,44 @@ def test_router_freeform_is_not_invalid():
     assert d["body"] == "kan du spørge om han henter i weekenden i stedet"
 
 
+def test_no_default_topic():
+    """A missing destination must fail, not fall back to some thread."""
+    from shared import topics as T
+    try:
+        T.resolve("")
+    except T.UnknownTopic:
+        pass
+    else:
+        raise AssertionError("empty topic resolved instead of raising")
+
+    try:
+        T.resolve("definitely_not_a_topic")
+    except T.UnknownTopic:
+        pass
+    else:
+        raise AssertionError("unknown topic resolved instead of raising")
+
+
+def test_routes_by_content():
+    from shared import topics as T
+    assert T.resolve("buyer_message")[1] == T.TOPICS["inbox"]
+    assert T.resolve("draft_card")[1] == T.TOPICS["inbox"]
+    assert T.resolve("shopping")[1] == T.TOPICS["gets"]
+    assert T.resolve("academic_jobs")[1] == T.TOPICS["jobs"]
+    assert T.resolve("task_capture")[1] == T.TOPICS["todoes"]
+    assert T.resolve("ops")[1] is None          # logged, never posted
+
+
+def test_personal_is_refused():
+    from shared import topics as T
+    try:
+        T.resolve("personal")
+    except T.PolicyRefusal:
+        pass
+    else:
+        raise AssertionError("Personal was allowed without an explicit override")
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
