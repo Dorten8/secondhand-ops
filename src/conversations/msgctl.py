@@ -133,6 +133,22 @@ def cmd_show(a):
     return 0
 
 
+def _maybe_clear_keyboard(st, note: str) -> None:
+    """Strip the sticky reply keyboard once no card is left to replace it.
+
+    A reply keyboard lives on the chat; a new card's `keyboard_for(id)` replaces
+    it, so the removal is only needed when the queue is empty. Never let this
+    raise — a failed receipt must not undo a recorded decision.
+    """
+    try:
+        if st.pending_drafts():
+            return
+        res = notify.clear_keyboard(note)
+        print(f"KEYBOARD cleared (msg {res.get('message_id')})")
+    except Exception as exc:  # noqa: BLE001
+        print(f"KEYBOARD clear failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 def cmd_approve(a):
     st = Store()
     d = st.draft(a.id)
@@ -146,6 +162,7 @@ def cmd_approve(a):
     if a.action == "ignore":
         st.decide(a.id, "ignored", a.by)
         print(f"IGNORED draft #{a.id}")
+        _maybe_clear_keyboard(st, f"\u2705 #{a.id} ignored")
         return 0
 
     if a.action == "supersede":
@@ -184,6 +201,7 @@ def cmd_approve(a):
                 st.close_event(e["id"])
         print(json.dumps({"sent": True, "draft_id": a.id, "result": res},
                          indent=1, ensure_ascii=False))
+        _maybe_clear_keyboard(st, f"\u2705 #{a.id} sent")
         return 0
 
     print(f"unknown action {a.action!r}", file=sys.stderr)
@@ -254,6 +272,31 @@ def cmd_unanswered(a):
         print(f"  conv    {c['conv_id']}")
     print(f"\nCOUNT {len(rows)}")
     return 0
+
+
+_IMPLIED_HISTORY = re.compile(
+    r"\b(correction|correcting|as agreed|as discussed|as promised|som aftalt|"
+    r"som lovet|retter|rettelse|lige en rettelse)\b", re.IGNORECASE)
+
+
+def _content_guard(st, draft) -> str | None:
+    """Refuse a reply that refers to a conversation history the buyer never had.
+
+    A draft is not a message. When the drafting step 'corrects' something, the only
+    thing it can be correcting is one of its own superseded drafts - which the buyer
+    never saw - so the text opens with a correction to nothing. That happened to a
+    real buyer on 2026-11-02; this check makes the state that allowed it impossible.
+    """
+    body = draft.get("body") or ""
+    m = _IMPLIED_HISTORY.search(body)
+    if not m:
+        return None
+    prior = st.outbound_count(draft["provider"], draft["conv_id"])
+    if prior:
+        return None
+    return (f"refusing to send: the draft says {m.group(0)!r} but nothing has ever been "
+            f"sent in this conversation (0 outbound). Either rewrite it as a first "
+            f"message, or send it with --allow-implied-history after reading the thread.")
 
 
 def cmd_notify(a):

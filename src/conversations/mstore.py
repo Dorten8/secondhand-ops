@@ -102,7 +102,7 @@ LEGAL = {
     "sent":     set(),
     "ignored":  set(),
     "superseded": set(),
-    "failed":   {"pending"},          # a failed send may be retried
+    "failed":   {"pending", "sent"},   # a failed send may be retried or sent by hand
 }
 
 
@@ -211,6 +211,13 @@ class Store:
             "SELECT * FROM drafts WHERE status='pending' AND notified_at IS NOT NULL "
             "ORDER BY notified_at LIMIT 1").fetchone()
         return dict(r) if r else None
+
+    def outbound_count(self, provider: str, conv_id: str) -> int:
+        """How many messages WE have actually sent in this conversation."""
+        r = self.db.execute(
+            "SELECT COUNT(*) FROM messages WHERE provider=? AND conv_id=? AND direction='out'",
+            (provider, conv_id)).fetchone()
+        return int(r[0]) if r else 0
 
     def open_draft_for(self, provider: str, conv_id: str):
         """The pending draft for a conversation, if one exists.

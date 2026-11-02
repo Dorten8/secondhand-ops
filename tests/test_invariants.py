@@ -94,6 +94,39 @@ def test_router_understands_button_labels():
     assert other["action"] == A.ACTION_FREEFORM and other["body"] == ""
 
 
+def test_guard_blocks_correction_without_history():
+    """A first-ever reply must not open with 'Correction' — there is nothing to correct."""
+    import tempfile
+    from pathlib import Path as _P
+    from conversations import approvals as A
+    from conversations.mstore import Store
+
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(_P(td) / "t.db")
+        did = st.create_draft("dba", "conv-fresh",
+                             "Hi Tristan\n\nCorrection \u2014 I leave by 17:00 tomorrow.")
+        d = st.draft(did)
+        blocked = A.content_guard(st, d, d["body"])
+        assert blocked, "a correction with no outbound history must be refused"
+
+        # once something has genuinely been sent, a correction is legitimate
+        st.add_message("dba", "conv-fresh", "earlier message", "out")
+        assert A.content_guard(st, d, d["body"]) is None
+
+
+def test_guard_allows_a_normal_first_reply():
+    import tempfile
+    from pathlib import Path as _P
+    from conversations import approvals as A
+    from conversations.mstore import Store
+
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(_P(td) / "t.db")
+        d = st.draft(st.create_draft("dba", "conv-2", "placeholder"))
+        ok = "Hi Tristan\n\nYes, tomorrow evening works \u2014 what time suits you?\n\nBest, Jakub"
+        assert A.content_guard(st, d, ok) is None
+
+
 def test_label_carries_the_draft_id():
     """A chat-wide keyboard is ambiguous unless the label names its card."""
     from conversations import approvals as A

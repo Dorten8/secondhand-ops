@@ -116,6 +116,28 @@ def parse_reply(text: str) -> dict:
             "reason": "not one of the shortcuts — treat as an instruction"}
 
 
+_IMPLIED_HISTORY = re.compile(
+    r"\b(correction|correcting|as agreed|as discussed|as promised|som aftalt|"
+    r"som lovet|retter|rettelse)\b", re.IGNORECASE)
+
+
+def content_guard(store: Store, draft: dict, body: str) -> str | None:
+    """A draft that was never sent does not exist in the buyer's world.
+
+    Refuses text that implies a shared history ("Correction — …", "as agreed")
+    when the conversation has no outbound message at all. Deterministic: no model
+    is asked whether it looks wrong.
+    """
+    m = _IMPLIED_HISTORY.search(body or "")
+    if not m:
+        return None
+    if store.outbound_count(draft["provider"], draft["conv_id"]):
+        return None
+    return (f"the draft says {m.group(0)!r} but this conversation has no outbound "
+            f"message yet — it would read as a correction to something he never "
+            f"received. Rewrite it as a first message.")
+
+
 def apply(store: Store, provider, draft_id: int, decision: dict, by: str = "Jacob") -> dict:
     """Carry out a parsed decision. Every write goes through mstore's legal-transition
     check, so a second decision on the same draft is refused, not silently sent twice."""
@@ -137,6 +159,11 @@ def apply(store: Store, provider, draft_id: int, decision: dict, by: str = "Jaco
                 "instruction": decision.get("body", ""), "applied": False}
 
     body = decision["body"] if act == ACTION_SEND_TEXT else d["body"]
+
+    blocked = content_guard(store, d, body)
+    if blocked and not decision.get("allow_implied_history"):
+        return {"ok": False, "action": "refused", "draft_id": draft_id, "error": blocked}
+
     try:
         res = provider.send(d["conv_id"], body)
     except Exception as exc:
