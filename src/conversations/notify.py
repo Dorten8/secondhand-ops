@@ -47,19 +47,25 @@ def to_html(draft: dict) -> str:
 # A reply keyboard, not an inline one: the buttons type their label into the chat,
 # which the gateway receives like any other message. Inline callback_data belongs to
 # the gateway's own prefixes (cl:, ea:, sc:) — a script's would be ignored silently.
-KEYBOARD = {
-    "keyboard": [
-        [{"text": "1️⃣ Send as is"}],
-        [{"text": "2️⃣ Send what I write"}],
-        [{"text": "3️⃣ Ignore"}],
-        [{"text": "4️⃣ Other"}],
-    ],
-    "resize_keyboard": True,
-    "one_time_keyboard": True,
-    "input_field_placeholder": "tap a choice, or type your own",
-}
+def keyboard_for(draft_id: int | None) -> dict:
+    """Buttons that name the draft they act on.
 
-REPLY_MARKUP = KEYBOARD
+    A reply keyboard is per-chat, so with more than one card on screen the label
+    is the only thing that can say *which* card a tap answers. The id is first so
+    it survives in the truncated button text.
+    """
+    tag = f"#{draft_id} " if draft_id else ""
+    return {
+        "keyboard": [
+            [{"text": f"{tag}1️⃣ Send as is"}],
+            [{"text": f"{tag}2️⃣ Send what I write"}],
+            [{"text": f"{tag}3️⃣ Ignore"}],
+            [{"text": f"{tag}4️⃣ Other"}],
+        ],
+        "resize_keyboard": True,
+        "one_time_keyboard": True,
+        "input_field_placeholder": "tap a choice, or type your own",
+    }
 
 OPTIONS_TEXT = (
     "↳ tap a button below, or type your own answer"
@@ -104,7 +110,8 @@ def digest_message(new_convs: list) -> str:
 
 
 def send_telegram(text_html: str, chat: str = DEFAULT_CHAT,
-                  thread: int | None = DEFAULT_THREAD, token: str | None = None) -> dict:
+                  thread: int | None = DEFAULT_THREAD, token: str | None = None,
+                  markup: dict | None = None) -> dict:
     """Post a rendered draft to the human. Zero tokens — a plain HTTP call.
 
     Reads the bot token from the environment file; never takes it as an argument
@@ -122,7 +129,8 @@ def send_telegram(text_html: str, chat: str = DEFAULT_CHAT,
         token = m.group(1).strip().strip('"').strip("'")
 
     payload = {"chat_id": chat, "text": text_html, "parse_mode": "HTML",
-               "disable_web_page_preview": True, "reply_markup": KEYBOARD}
+               "disable_web_page_preview": True,
+               "reply_markup": markup if markup is not None else keyboard_for(None)}
     if thread:
         payload["message_thread_id"] = thread
 
@@ -163,6 +171,9 @@ if __name__ == "__main__":
         print(html)
         _sys.exit(0)
 
-    res = send_telegram(html, chat=a.chat, thread=a.thread)
+    res = send_telegram(html, chat=a.chat, thread=a.thread,
+                        markup=keyboard_for(a.draft))
+    if res.get("ok"):
+        Store().mark_notified(a.draft)
     print(_json.dumps(res))
     _sys.exit(0 if res.get("ok") else 4)

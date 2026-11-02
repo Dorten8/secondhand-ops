@@ -264,11 +264,22 @@ def cmd_notify(a):
     if not d:
         print(f"no draft #{a.id}", file=sys.stderr)
         return 3
+    # one live card at a time: a chat-wide keyboard cannot point at two cards
+    out = st.outstanding_card()
+    if out and out["id"] != a.id:
+        print(f"not sending #{a.id}: card #{out['id']} ({out['partner_name']}) is still "
+              f"unanswered. Decide that one first, or pass --force.", file=sys.stderr)
+        if not a.force:
+            return 5
+
     html = notify.to_html(d)
     if a.no_send:
         print(html)
         return 0
-    res = notify.send_telegram(html, chat=a.chat, thread=a.thread)
+    res = notify.send_telegram(html, chat=a.chat, thread=a.thread,
+                               markup=notify.keyboard_for(a.id))
+    if res.get("ok"):
+        st.mark_notified(a.id)
     print(json.dumps(res))
     return 0 if res.get("ok") else 4
 
@@ -285,6 +296,8 @@ def cmd_decide(a):
         print(f"no draft #{a.id}", file=sys.stderr)
         return 3
     decision = approvals.parse_reply(a.text)
+    if decision.get("draft_id"):
+        a.id = decision["draft_id"]          # the label named its card; trust the label
     out = {"draft_id": a.id, "parsed": decision}
 
     if decision["action"] in (approvals.ACTION_FREEFORM, approvals.ACTION_NEED_TEXT):
@@ -322,6 +335,7 @@ def main():
     nt = sub.add_parser("notify")
     nt.add_argument("--id", type=int, required=True)
     nt.add_argument("--no-send", action="store_true")
+    nt.add_argument("--force", action="store_true")
     nt.add_argument("--chat", default=notify.DEFAULT_CHAT)
     nt.add_argument("--thread", type=int, default=notify.DEFAULT_THREAD)
     nt.set_defaults(fn=cmd_notify)

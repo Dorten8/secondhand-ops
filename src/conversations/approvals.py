@@ -54,6 +54,11 @@ _EXPLICIT_TEXT = re.compile(
 _NORM = re.compile(r"[^a-z0-9 ]+")
 
 
+def _ref(text: str):
+    m = re.search(r"#(\d+)", text or "")
+    return int(m.group(1)) if m else None
+
+
 def _norm(text: str) -> str:
     """Button labels arrive as '1️⃣ Send as is'. Strip emoji and punctuation so a
     tap and a typed 'send as is' take the same path."""
@@ -73,22 +78,29 @@ def parse_reply(text: str) -> dict:
     # Button labels arrive as "1️⃣ Send as is"; typed answers arrive as "1" or
     # "send as is". Both must reach the same rule, so normalise first and compare
     # against the digits-stripped form.
-    norm = _norm(raw)
+    norm = _norm(re.sub(r"#\d+", " ", raw))
     low = norm.lstrip("0123456789 ").strip() or norm
 
     if low in _YES:
-        return {"action": ACTION_SEND_AS_IS, "body": None, "reason": f"matched yes-token {low!r}"}
+        return {"action": ACTION_SEND_AS_IS, "body": None, "draft_id": _ref(raw),
+                "reason": f"matched yes-token {low!r}"}
 
     if low in _NO:
-        return {"action": ACTION_IGNORE, "body": None, "reason": f"matched no-token {low!r}"}
+        return {"action": ACTION_IGNORE, "body": None, "draft_id": _ref(raw),
+                "reason": f"matched no-token {low!r}"}
 
     if low in {"2", "send what i write", "send what i type", "my text"}:
-        return {"action": ACTION_NEED_TEXT, "body": None,
+        return {"action": ACTION_NEED_TEXT, "body": None, "draft_id": _ref(raw),
                 "reason": "button tapped: waiting for the text to send"}
 
     if low == "other":
-        return {"action": ACTION_FREEFORM, "body": "",
+        return {"action": ACTION_FREEFORM, "body": "", "draft_id": _ref(raw),
                 "reason": "button tapped: Other — ask what he wants"}
+
+    # "  #7 · 1️⃣ Send as is" — the label names its draft so a chat-wide keyboard
+    # can still be unambiguous.
+    idm = re.search(r"#(\d+)", raw)
+    draft_ref = int(idm.group(1)) if idm else None
 
     m = _EXPLICIT_TEXT.match(raw)
     if m:

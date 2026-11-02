@@ -114,11 +114,13 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
-        # additive migration for stores created before last_at existed
-        try:
-            self.db.execute("ALTER TABLE conversations ADD COLUMN last_at TEXT")
-        except sqlite3.OperationalError:
-            pass
+        # additive migrations for stores created before these columns existed
+        for stmt in ("ALTER TABLE conversations ADD COLUMN last_at TEXT",
+                     "ALTER TABLE drafts ADD COLUMN notified_at REAL"):
+            try:
+                self.db.execute(stmt)
+            except sqlite3.OperationalError:
+                pass
         self.db.commit()
 
     # ---------- conversations ----------
@@ -195,6 +197,21 @@ class Store:
         self.db.commit()
 
     # ---------- drafts ----------
+    def mark_notified(self, draft_id: int) -> None:
+        self.db.execute("UPDATE drafts SET notified_at=? WHERE id=?", (time.time(), draft_id))
+        self.db.commit()
+
+    def outstanding_card(self):
+        """The one draft already shown and still unanswered.
+
+        A reply keyboard is per-chat, not per-message, so two live cards and one
+        keyboard is exactly how he ends up unable to tell what he is answering.
+        """
+        r = self.db.execute(
+            "SELECT * FROM drafts WHERE status='pending' AND notified_at IS NOT NULL "
+            "ORDER BY notified_at LIMIT 1").fetchone()
+        return dict(r) if r else None
+
     def open_draft_for(self, provider: str, conv_id: str):
         """The pending draft for a conversation, if one exists.
 

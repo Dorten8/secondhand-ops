@@ -94,6 +94,35 @@ def test_router_understands_button_labels():
     assert other["action"] == A.ACTION_FREEFORM and other["body"] == ""
 
 
+def test_label_carries_the_draft_id():
+    """A chat-wide keyboard is ambiguous unless the label names its card."""
+    from conversations import approvals as A
+    d = A.parse_reply("#11\ufe0f\u20e3 3\ufe0f\u20e3 Ignore")
+    assert d["action"] == A.ACTION_IGNORE and d["draft_id"] == 11
+    d = A.parse_reply("#7 1\ufe0f\u20e3 Send as is")
+    assert d["action"] == A.ACTION_SEND_AS_IS and d["draft_id"] == 7
+    # a bare answer still works, with no id
+    assert A.parse_reply("3")["draft_id"] is None
+
+
+def test_one_card_at_a_time():
+    """Two live cards + one chat-wide keyboard = he cannot tell what he is answering."""
+    import tempfile
+    from pathlib import Path as _P
+    from conversations.mstore import Store
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(_P(td) / "t.db")
+        a = st.create_draft("dba", "conv-1", "body one", partner_name="A")
+        b = st.create_draft("dba", "conv-2", "body two", partner_name="B")
+        assert st.outstanding_card() is None
+        st.mark_notified(a)
+        assert st.outstanding_card()["id"] == a
+        st.decide(a, "ignored", "test")
+        assert st.outstanding_card() is None, "a decided card must not block the next"
+        st.mark_notified(b)
+        assert st.outstanding_card()["id"] == b
+
+
 def test_one_live_draft_per_conversation():
     """The poller re-reports the open queue; drafting must not duplicate the card."""
     import tempfile
