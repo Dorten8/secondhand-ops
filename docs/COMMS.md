@@ -71,3 +71,25 @@ scripts that know nothing about Telegram.
 Because it already did, repeatedly, and the failure was silent: the message
 arrived, looked fine, and was in the wrong place. A wrong send that succeeds is
 worse than a refused send that fails loudly — the refusal is the feature.
+
+## Choices in chat
+
+Draft cards carry a reply keyboard with **three** buttons, each prefixed by the
+draft id (`#7 3️⃣ Ignore`) so a chat-wide keyboard is never ambiguous:
+
+| tap | what happens |
+|---|---|
+| `#N 1️⃣ Send as is` | the draft is sent verbatim, then verified against the marketplace |
+| `#N 2️⃣ Send what I write` | waits for his text, then sends exactly that |
+| `#N 3️⃣ Ignore` | closes the draft, nothing is sent |
+
+**Anything else is typed, not tapped.** There is deliberately no "Other" button:
+Telegram has no API that opens the input field, so such a button could only send a
+message that costs a model turn to reply "what do you want?" — the same question
+the placeholder already asks, for free. The freeform path is the input field's
+placeholder text.
+
+Inline (callback) buttons are not an option for scripts: the gateway's callback
+dispatch only recognises its own prefixes (`cl:`, `ea:`, `sc:`…), so a script's
+`callback_data` is accepted by Telegram and then silently ignored on tap — a
+button that looks live and does nothing.

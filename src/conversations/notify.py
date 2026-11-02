@@ -40,7 +40,7 @@ def to_html(draft: dict) -> str:
     if inbound:
         parts += [f"“{inbound[:500]}”", ""]
     parts += ["<b>Draft:</b>", f"<blockquote>{body}</blockquote>", "",
-              _escape(OPTIONS_TEXT)]
+              "↳ tap a button, or just type — typing needs nothing from a model"]
     return "\n".join(parts)
 
 
@@ -60,11 +60,13 @@ def keyboard_for(draft_id: int | None) -> dict:
             [{"text": f"{tag}1️⃣ Send as is"}],
             [{"text": f"{tag}2️⃣ Send what I write"}],
             [{"text": f"{tag}3️⃣ Ignore"}],
-            [{"text": f"{tag}4️⃣ Other"}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True,
-        "input_field_placeholder": "tap a choice, or type your own",
+        # The freeform path lives here, not on a button: a "write something else"
+        # button can only send a message that costs a model turn to answer "what?".
+        # Typing into this field already is the instruction, at no cost.
+        "input_field_placeholder": "✍️ or type what you want instead…",
     }
 
 OPTIONS_TEXT = (
@@ -107,6 +109,39 @@ def digest_message(new_convs: list) -> str:
         lines.append(f"**{i}. {(c.item_title or '')[:50]}**")
         lines.append(f"   {c.partner_name}: \u201c{c.last_preview[:120]}\u201d")
     return "\n".join(lines)
+
+
+def clear_keyboard(note: str, chat: str = DEFAULT_CHAT,
+                   thread: int | None = DEFAULT_THREAD, token: str | None = None) -> dict:
+    """Post a one-line receipt AND remove the per-chat reply keyboard.
+
+    A reply keyboard (not inline) lives on the chat, not on the message, so the
+    only way to take it away is `remove_keyboard` — and that requires sending a
+    message. Jacob's complaint (2026-11-02): "the buttons are sticky and remain
+    there even after replying". So the receipt doubles as the removal, and it is
+    only sent when no draft is left to replace the keyboard with a fresh one.
+    """
+    import json as _json
+    import re as _re
+    import urllib.request as _url
+
+    if token is None:
+        env = Path("/home/hermes/hermes/home/.env").read_text(encoding="utf-8", errors="replace")
+        m = _re.search(r"^TELEGRAM_BOT_TOKEN=(.+)$", env, _re.M)
+        if not m:
+            raise RuntimeError("TELEGRAM_BOT_TOKEN not found in .env")
+        token = m.group(1).strip().strip('"').strip("'")
+
+    payload = {"chat_id": chat, "text": _escape(note), "parse_mode": "HTML",
+               "disable_web_page_preview": True,
+               "reply_markup": {"remove_keyboard": True}}
+    if thread:
+        payload["message_thread_id"] = thread
+    req = _url.Request(f"{TELEGRAM_API}/bot{token}/sendMessage",
+                       data=_json.dumps(payload).encode(),
+                       headers={"Content-Type": "application/json"})
+    res = _json.load(_url.urlopen(req, timeout=25))
+    return {"ok": res.get("ok"), "message_id": res.get("result", {}).get("message_id")}
 
 
 def send_telegram(text_html: str, chat: str = DEFAULT_CHAT,

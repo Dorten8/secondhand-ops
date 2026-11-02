@@ -94,8 +94,9 @@ def parse_reply(text: str) -> dict:
                 "reason": "button tapped: waiting for the text to send"}
 
     if low == "other":
+        # only reachable from a card sent before 2026-11-02; typing is the freeform path
         return {"action": ACTION_FREEFORM, "body": "", "draft_id": _ref(raw),
-                "reason": "button tapped: Other — ask what he wants"}
+                "reason": "old card's Other button — ask once, briefly, what he wants"}
 
     # "  #7 · 1️⃣ Send as is" — the label names its draft so a chat-wide keyboard
     # can still be unambiguous.
