@@ -40,6 +40,7 @@ ACTION_SEND_AS_IS = "send_as_is"
 ACTION_SEND_TEXT = "send_text"
 ACTION_IGNORE = "ignore"
 ACTION_FREEFORM = "freeform"
+ACTION_NEED_TEXT = "need_text"      # "2 -> Send what I write": wait for his text
 
 _YES = {"yes", "y", "ja", "j", "ok", "okay", "1", "send", "send as is", "send as-is"}
 _NO = {"no", "n", "nej", "3", "ignore", "drop", "skip"}
@@ -50,6 +51,15 @@ _EXPLICIT_TEXT = re.compile(
     re.IGNORECASE | re.DOTALL)
 
 
+_NORM = re.compile(r"[^a-z0-9 ]+")
+
+
+def _norm(text: str) -> str:
+    """Button labels arrive as '1️⃣ Send as is'. Strip emoji and punctuation so a
+    tap and a typed 'send as is' take the same path."""
+    return re.sub(r"\s+", " ", _NORM.sub(" ", (text or "").lower())).strip()
+
+
 def parse_reply(text: str) -> dict:
     """Message -> {action, body}. Pure function; no I/O, no model.
 
@@ -57,10 +67,14 @@ def parse_reply(text: str) -> dict:
     raw instruction for FREEFORM.
     """
     raw = (text or "").strip()
-    low = raw.lower().strip(" .!?\"'")
-
     if not raw:
         return {"action": ACTION_FREEFORM, "body": "", "reason": "empty"}
+
+    # Button labels arrive as "1️⃣ Send as is"; typed answers arrive as "1" or
+    # "send as is". Both must reach the same rule, so normalise first and compare
+    # against the digits-stripped form.
+    norm = _norm(raw)
+    low = norm.lstrip("0123456789 ").strip() or norm
 
     if low in _YES:
         return {"action": ACTION_SEND_AS_IS, "body": None, "reason": f"matched yes-token {low!r}"}
@@ -68,10 +82,17 @@ def parse_reply(text: str) -> dict:
     if low in _NO:
         return {"action": ACTION_IGNORE, "body": None, "reason": f"matched no-token {low!r}"}
 
+    if low in {"2", "send what i write", "send what i type", "my text"}:
+        return {"action": ACTION_NEED_TEXT, "body": None,
+                "reason": "button tapped: waiting for the text to send"}
+
+    if low == "other":
+        return {"action": ACTION_FREEFORM, "body": "",
+                "reason": "button tapped: Other — ask what he wants"}
+
     m = _EXPLICIT_TEXT.match(raw)
     if m:
         body = m.group("body").strip()
-        # "2" alone is not a body; require something with substance
         if len(body) >= 8:
             return {"action": ACTION_SEND_TEXT, "body": body,
                     "reason": "explicit replacement text after the 2/send prefix"}

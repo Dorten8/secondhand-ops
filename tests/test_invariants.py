@@ -83,6 +83,32 @@ def test_router_shortcuts():
     assert d["body"] == "Hej, den er desværre solgt"
 
 
+def test_router_understands_button_labels():
+    """A tap sends the label as text; it must take the same path as typing."""
+    from conversations import approvals as A
+    assert A.parse_reply("1\ufe0f\u20e3 Send as is")["action"] == A.ACTION_SEND_AS_IS
+    assert A.parse_reply("3\ufe0f\u20e3 Ignore")["action"] == A.ACTION_IGNORE
+    assert A.parse_reply("2\ufe0f\u20e3 Send what I write")["action"] == A.ACTION_NEED_TEXT
+    assert A.parse_reply("2")["action"] == A.ACTION_NEED_TEXT
+    other = A.parse_reply("4\ufe0f\u20e3 Other")
+    assert other["action"] == A.ACTION_FREEFORM and other["body"] == ""
+
+
+def test_one_live_draft_per_conversation():
+    """The poller re-reports the open queue; drafting must not duplicate the card."""
+    import tempfile
+    from pathlib import Path as _P
+    from conversations.mstore import Store
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(_P(td) / "t.db")
+        a = st.create_draft("dba", "conv-1", "first body")
+        b = st.create_draft("dba", "conv-1", "second body")
+        assert a == b, "a second draft was created for a conversation that already had one"
+        st.decide(a, "ignored", "test")
+        c = st.create_draft("dba", "conv-1", "third body")
+        assert c != a, "a decided draft must not block a new one"
+
+
 def test_router_freeform_is_not_invalid():
     """Anything outside the shortcuts is an instruction for the agent, not a rejection."""
     from conversations import approvals as A

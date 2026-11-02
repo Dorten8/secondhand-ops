@@ -16,7 +16,7 @@ from pathlib import Path
 
 TELEGRAM_API = "https://api.telegram.org"
 DEFAULT_CHAT = "-1004362684061"      # Hermes group
-DEFAULT_THREAD = 13                  # Inbox topic
+DEFAULT_THREAD = 13                  # Inbox — must match topics.ROUTES['draft_card']
 
 
 def _escape(t: str) -> str:
@@ -44,11 +44,25 @@ def to_html(draft: dict) -> str:
     return "\n".join(parts)
 
 
+# A reply keyboard, not an inline one: the buttons type their label into the chat,
+# which the gateway receives like any other message. Inline callback_data belongs to
+# the gateway's own prefixes (cl:, ea:, sc:) — a script's would be ignored silently.
+KEYBOARD = {
+    "keyboard": [
+        [{"text": "1️⃣ Send as is"}],
+        [{"text": "2️⃣ Send what I write"}],
+        [{"text": "3️⃣ Ignore"}],
+        [{"text": "4️⃣ Other"}],
+    ],
+    "resize_keyboard": True,
+    "one_time_keyboard": True,
+    "input_field_placeholder": "tap a choice, or type your own",
+}
+
+REPLY_MARKUP = KEYBOARD
+
 OPTIONS_TEXT = (
-    "1️⃣ Send as is  (zero tokens)\n"
-    "2️⃣ Send what I write  (zero tokens)\n"
-    "3️⃣ Ignore\n"
-    "4️⃣ Other (say what you want)"
+    "↳ tap a button below, or type your own answer"
 )
 
 OPTIONS = (
@@ -108,7 +122,7 @@ def send_telegram(text_html: str, chat: str = DEFAULT_CHAT,
         token = m.group(1).strip().strip('"').strip("'")
 
     payload = {"chat_id": chat, "text": text_html, "parse_mode": "HTML",
-               "disable_web_page_preview": True}
+               "disable_web_page_preview": True, "reply_markup": KEYBOARD}
     if thread:
         payload["message_thread_id"] = thread
 

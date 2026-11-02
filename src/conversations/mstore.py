@@ -27,7 +27,7 @@ import sqlite3
 import time
 from pathlib import Path
 
-DEFAULT_DB = Path("$REPO/messaging/state.db")
+DEFAULT_DB = Path("/home/hermes/hermes/home/messaging/state.db")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS conversations (
@@ -195,8 +195,24 @@ class Store:
         self.db.commit()
 
     # ---------- drafts ----------
+    def open_draft_for(self, provider: str, conv_id: str):
+        """The pending draft for a conversation, if one exists.
+
+        The poller reports the whole open queue every tick, so without this the
+        drafting step made a fresh draft each run and the human got the same
+        buyer four times. One conversation gets at most one live draft.
+        """
+        r = self.db.execute(
+            "SELECT * FROM drafts WHERE provider=? AND conv_id=? AND status='pending' "
+            "ORDER BY id DESC LIMIT 1", (provider, conv_id)).fetchone()
+        return dict(r) if r else None
+
     def create_draft(self, provider: str, conv_id: str, body: str, inbound: str = "",
                      item_title: str = "", partner_name: str = "") -> int:
+        # enforced here, not in the caller: every drafting path goes through this
+        existing = self.open_draft_for(provider, conv_id)
+        if existing:
+            return int(existing["id"])
         cur = self.db.execute(
             """INSERT INTO drafts (provider, conv_id, item_title, partner_name,
                                    inbound, body, status, created_at)

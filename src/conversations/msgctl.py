@@ -287,7 +287,7 @@ def cmd_decide(a):
     decision = approvals.parse_reply(a.text)
     out = {"draft_id": a.id, "parsed": decision}
 
-    if decision["action"] == approvals.ACTION_FREEFORM:
+    if decision["action"] in (approvals.ACTION_FREEFORM, approvals.ACTION_NEED_TEXT):
         out["note"] = ("instruction — hand back to the agent; nothing was sent")
         print(json.dumps(out, indent=1, ensure_ascii=False))
         return 0
