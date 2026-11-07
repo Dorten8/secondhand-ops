@@ -310,6 +310,29 @@ def test_personal_is_refused():
         raise AssertionError("Personal was allowed without an explicit override")
 
 
+def test_every_env_var_is_documented():
+    """Someone cloning this repo must be able to set it up from .env.example alone."""
+    import re
+    from pathlib import Path as _P
+
+    root = _P(__file__).resolve().parents[1]
+    pattern = re.compile(r'(?:os\.environ\.get|os\.environ\[|_env)\s*\(\s*["\']([A-Z][A-Z0-9_]+)["\']')
+    used = set()
+    for path in list(root.glob("src/**/*.py")) + list(root.glob("bin/*")):
+        if not path.is_file():
+            continue
+        used |= set(pattern.findall(path.read_text(encoding="utf-8", errors="replace")))
+
+    # language variants are built dynamically: PICKUP_PHONE_NOTE_{lang}
+    if any("PICKUP_PHONE_NOTE_" in p.read_text(errors="replace")
+           for p in root.glob("src/**/*.py")):
+        used |= {"PICKUP_PHONE_NOTE_DA", "PICKUP_PHONE_NOTE_EN"}
+
+    documented = set(re.findall(r"^([A-Z][A-Z0-9_]+)=", (root / ".env.example").read_text(), re.M))
+    missing = sorted(used - documented)
+    assert not missing, f"used in code but absent from .env.example: {missing}"
+
+
 def main() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

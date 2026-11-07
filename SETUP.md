@@ -33,6 +33,16 @@ Configuration variables in `.env`:
 | `NOTION_DATABASE_ID` | Notion Database ID | Optional |
 | `CDP_URL` | Chrome DevTools Protocol URL (default: `http://127.0.0.1:9222`) | Optional |
 | `SELLER_LOCATION_POSTAL` | Default pickup location (e.g., `2300 København S`) | Optional |
+| `PICKUP_MAP` | Google Maps link sent when a pickup is agreed | **Required to send confirmations** |
+| `PICKUP_PHONE` | Phone number in the same block | **Required to send confirmations** |
+| `PICKUP_PHONE_NOTE_DA` / `_EN` | Wording of the phone line per language | Optional (sensible defaults) |
+| `HERMES_ENV_FILE` | Where these values are read from when cron runs lack a shell | Optional |
+| `SAY_LOG` | Audit log of every delivered message and its topic | Optional |
+| `TG_TOKEN_FILE` | File holding the bot token, instead of `TELEGRAM_BOT_TOKEN` | Optional |
+
+Everything the code reads is listed in `.env.example`, and a test fails if the two
+drift apart — a clone that follows `cp .env.example .env` works without reading the
+source.
 
 > **Note on Notion**: The engine runs completely standalone using local atomic WAL `items.json`. If `NOTION_TOKEN` is omitted, Notion syncing degrades gracefully without crashing.
 
