@@ -122,17 +122,40 @@ def test_unsent_draft_can_be_rewritten():
             raise AssertionError("a decided draft must not be rewritten")
 
 
-def test_pickup_block_is_verbatim_and_placed_before_signoff():
-    """The address and phone are constants, not something a model retypes."""
+def test_pickup_block_comes_from_config_not_source():
+    """The address and phone must be configuration: the repo is shareable, the
+    person is not. A missing config must refuse rather than send a partial block."""
+    import os
     from conversations import snippets as S
-    body = 'Hi Tristan\n\nTomorrow at 19:00 works.\n\nBest, Jakub'
-    out = S.with_pickup(body)
-    assert S.PICKUP_MAP in out and S.PHONE in out
-    assert out.index(S.PICKUP_MAP) < out.index('Best, Jakub'), "block must precede the sign-off"
-    assert out.count(S.PICKUP_MAP) == 1
 
-    # idempotent: never twice, no matter how often it is applied
-    assert S.with_pickup(out) == out
+    saved = {k: os.environ.get(k) for k in ("PICKUP_MAP", "PICKUP_PHONE", "PICKUP_PHONE_NOTE")}
+    try:
+        os.environ["PICKUP_MAP"] = "https://maps.example.test/x"
+        os.environ["PICKUP_PHONE"] = "12345678"
+        body = "Hi\n\nTomorrow at 19:00 works.\n\nBest, Jakub"
+        out = S.with_pickup(body)
+        assert "https://maps.example.test/x" in out
+        assert "12345678" in out
+        assert out.index("maps.example.test") < out.index("Best, Jakub"), "block goes before the sign-off"
+        assert S.with_pickup(out) == out, "block must never appear twice"
+
+        # no config -> refuse, do not emit a half-empty address
+        for k in ("PICKUP_MAP", "PICKUP_PHONE"):
+            os.environ.pop(k, None)
+        os.environ["HERMES_ENV_FILE"] = "/nonexistent"
+        try:
+            S.pickup_block()
+        except S.MissingPickupConfig:
+            pass
+        else:
+            raise AssertionError("a missing pickup config must raise, not send")
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        os.environ.pop("HERMES_ENV_FILE", None)
 
 
 def test_guard_blocks_correction_without_history():
