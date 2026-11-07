@@ -60,25 +60,21 @@ def keyboard_for(draft_id: int | None) -> dict:
             [{"text": f"{tag}1️⃣ Send as is"}],
             [{"text": f"{tag}2️⃣ Send what I write"}],
             [{"text": f"{tag}3️⃣ Ignore"}],
+            [{"text": f"{tag}4️⃣ Other"}],
         ],
         "resize_keyboard": True,
         "one_time_keyboard": True,
-        # The freeform path lives here, not on a button: a "write something else"
-        # button can only send a message that costs a model turn to answer "what?".
-        # Typing into this field already is the instruction, at no cost.
+        # The 4th button exists because Jacob expects four choices (his spec from
+        # 2026-10-31). It cannot open the input box - Telegram has no API for that -
+        # so tapping it sends the label and the agent answers with one short line.
         "input_field_placeholder": "✍️ or type what you want instead…",
     }
 
-OPTIONS_TEXT = (
+OPTIONS_TEXT = (   # kept for the plain-text CLI preview only
     "↳ tap a button below, or type your own answer"
 )
 
-OPTIONS = (
-    "1\ufe0f\u20e3 Send as is  (zero tokens)\n"
-    "2\ufe0f\u20e3 Send what I write  (zero tokens)\n"
-    "3\ufe0f\u20e3 Ignore\n"
-    "4\ufe0f\u20e3 Other (say what you want)"
-)
+OPTIONS = OPTIONS_TEXT
 
 
 def draft_message(draft: dict) -> str:

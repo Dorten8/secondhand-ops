@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -33,6 +34,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "providers"))
 
 import approvals                                                   # noqa: E402
+import snippets
 import notify                                                      # noqa: E402
 from mstore import Store                                            # noqa: E402
 from base import AuthError, ProviderError                           # noqa: E402
@@ -100,6 +102,8 @@ def cmd_draft(a):
     if len(body.strip()) < 8:
         print(f"REFUSED: body is {len(body.strip())} chars", file=sys.stderr)
         return 3
+    if getattr(a, "pickup", False):
+        body = snippets.with_pickup(body)      # verbatim address + phone, never retyped
     convs = {c["conv_id"]: c for c in st.conversations(a.provider)}
     c = convs.get(a.conv, {})
     did = st.create_draft(a.provider, a.conv, body,
@@ -299,6 +303,39 @@ def _content_guard(st, draft) -> str | None:
             f"message, or send it with --allow-implied-history after reading the thread.")
 
 
+def cmd_deliver(a):
+    """Post any draft that was written but never put in front of the human.
+
+    Drafting is an LLM step; delivery must not depend on that same run finishing.
+    A draft that exists with no card is invisible, and the buyer's message is
+    effectively unanswered - which is what 'lack of timely relaying' was: latency
+    to draft was under a minute, latency to *show* had no bound at all.
+    """
+    st = Store()
+    queued = [d for d in st.pending_drafts() if not d.get("notified_at")]
+    if not queued:
+        return 0
+
+    out = st.outstanding_card()
+    if out:
+        if not a.quiet:
+            print(f"holding {len(queued)} draft(s): card #{out['id']} ({out['partner_name']}) "
+                  f"is still unanswered")
+        return 0
+
+    d = sorted(queued, key=lambda x: x["id"])[0]
+    res = notify.send_telegram(notify.to_html(d), chat=a.chat, thread=a.thread,
+                               markup=notify.keyboard_for(d["id"]))
+    if res.get("ok"):
+        st.mark_notified(d["id"])
+        if not a.quiet:
+            print(f"delivered #{d['id']} ({d['partner_name']}) as message {res['message_id']}")
+        return 0
+    if not a.quiet:
+        print(f"delivery failed for #{d['id']}: {res}", file=sys.stderr)
+    return 4
+
+
 def cmd_notify(a):
     """Deliver the draft card to the human. This is the script the chat receives —
     not the agent writing prose, so the wording cannot drift and it costs nothing."""
@@ -349,6 +386,16 @@ def cmd_decide(a):
         return 0
 
     out["result"] = approvals.apply(st, prov(d["provider"]), a.id, decision, a.by)
+    if out["result"].get("ok") and decision["action"] in (approvals.ACTION_SEND_AS_IS,
+                                                          approvals.ACTION_SEND_TEXT,
+                                                          approvals.ACTION_IGNORE):
+        nxt = [x for x in st.pending_drafts() if not x.get("notified_at")]
+        if nxt:
+            n = sorted(nxt, key=lambda x: x["id"])[0]
+            r = notify.send_telegram(notify.to_html(n), markup=notify.keyboard_for(n["id"]))
+            if r.get("ok"):
+                st.mark_notified(n["id"])
+                out["next_card"] = {"draft_id": n["id"], "message_id": r["message_id"]}
     print(json.dumps(out, indent=1, ensure_ascii=False))
     return 0 if out["result"].get("ok") else 4
 
@@ -375,6 +422,12 @@ def main():
     un.add_argument("--json", action="store_true")
     un.set_defaults(fn=cmd_unanswered)
 
+    dv = sub.add_parser("deliver")
+    dv.add_argument("--quiet", action="store_true")
+    dv.add_argument("--chat", default=notify.DEFAULT_CHAT)
+    dv.add_argument("--thread", type=int, default=notify.DEFAULT_THREAD)
+    dv.set_defaults(fn=cmd_deliver)
+
     nt = sub.add_parser("notify")
     nt.add_argument("--id", type=int, required=True)
     nt.add_argument("--no-send", action="store_true")
@@ -395,6 +448,8 @@ def main():
     d.add_argument("--conv", required=True)
     d.add_argument("--body-file"); d.add_argument("--body")
     d.add_argument("--inbound", default="")
+    d.add_argument("--pickup", action="store_true",
+                   help="insert the fixed map link + phone block before the sign-off")
     d.add_argument("--title", default=""); d.add_argument("--buyer", default="")
     d.set_defaults(fn=cmd_draft)
 

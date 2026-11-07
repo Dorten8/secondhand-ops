@@ -122,6 +122,10 @@ def poll(provider_name: str = "dba", store: Store | None = None,
         if is_stale(c.last_at, max_age):
             stale += 1
             continue
+        # A conversation that already has a live draft needs no second one; queuing it
+        # would wake the agent to redo work and then get refused by the delivery queue.
+        if store.open_draft_for(provider_name, c.conv_id):
+            continue
         if store.push_event("needs_draft", provider_name, c.conv_id, c.last_preview):
             queued += 1
             if priming:
@@ -143,7 +147,8 @@ def poll(provider_name: str = "dba", store: Store | None = None,
     # Report the whole OPEN queue, not only what this tick created. Otherwise a
     # drafting run that crashed would leave a thread queued but invisible, and
     # the monitor would keep printing an unchanged (empty) digest forever.
-    open_ev = store.open_events("needs_draft")
+    open_ev = [ev for ev in store.open_events("needs_draft")
+               if not store.open_draft_for(provider_name, ev["conv_id"])]
     if not open_ev:
         return 0                          # SILENT
 

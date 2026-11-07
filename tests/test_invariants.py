@@ -94,6 +94,47 @@ def test_router_understands_button_labels():
     assert other["action"] == A.ACTION_FREEFORM and other["body"] == ""
 
 
+def test_four_options_stay_four():
+    """Jacob's spec is four choices; removing one is not a style change."""
+    from conversations import notify as N
+    rows = N.keyboard_for(19)["keyboard"]
+    labels = [btn["text"] for row in rows for btn in row]
+    assert len(labels) == 4, labels
+    assert all(lab.startswith("#19 ") for lab in labels), labels
+    assert any("Other" in lab for lab in labels)
+
+
+def test_unsent_draft_can_be_rewritten():
+    import tempfile
+    from pathlib import Path as _P
+    from conversations.mstore import Store
+    with tempfile.TemporaryDirectory() as td:
+        st = Store(_P(td) / "t.db")
+        did = st.create_draft("dba", "c1", "old text")
+        st.set_body(did, "new text")
+        assert st.draft(did)["body"] == "new text"
+        st.decide(did, "ignored", "test")
+        try:
+            st.set_body(did, "too late")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("a decided draft must not be rewritten")
+
+
+def test_pickup_block_is_verbatim_and_placed_before_signoff():
+    """The address and phone are constants, not something a model retypes."""
+    from conversations import snippets as S
+    body = 'Hi Tristan\n\nTomorrow at 19:00 works.\n\nBest, Jakub'
+    out = S.with_pickup(body)
+    assert S.PICKUP_MAP in out and S.PHONE in out
+    assert out.index(S.PICKUP_MAP) < out.index('Best, Jakub'), "block must precede the sign-off"
+    assert out.count(S.PICKUP_MAP) == 1
+
+    # idempotent: never twice, no matter how often it is applied
+    assert S.with_pickup(out) == out
+
+
 def test_guard_blocks_correction_without_history():
     """A first-ever reply must not open with 'Correction' — there is nothing to correct."""
     import tempfile

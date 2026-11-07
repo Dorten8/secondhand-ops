@@ -253,6 +253,17 @@ class Store:
         return [dict(r) for r in self.db.execute(
             "SELECT * FROM drafts WHERE status='pending' ORDER BY created_at")]
 
+    def set_body(self, draft_id: int, body: str) -> None:
+        """Rewrite a draft that has not been sent yet. Used when the wording changes
+        before the human decides - the draft is not a message until it is sent."""
+        d = self.draft(draft_id)
+        if not d:
+            raise KeyError(f"draft {draft_id} does not exist")
+        if d["status"] != "pending":
+            raise ValueError(f"draft {draft_id} is {d['status']}; refusing to rewrite it")
+        self.db.execute("UPDATE drafts SET body=? WHERE id=?", (body, draft_id))
+        self.db.commit()
+
     def decide(self, draft_id: int, status: str, by: str, result: str = "") -> None:
         d = self.draft(draft_id)
         if not d:
