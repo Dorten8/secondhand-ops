@@ -103,14 +103,24 @@ def cmd_draft(a):
         print(f"REFUSED: body is {len(body.strip())} chars", file=sys.stderr)
         return 3
     if getattr(a, "pickup", False):
-        body = snippets.with_pickup(body)      # verbatim address + phone, never retyped
+        # language follows the message being sent, unless the caller pins it
+        body = snippets.with_pickup(body, lang=getattr(a, "lang", None) or None)
     convs = {c["conv_id"]: c for c in st.conversations(a.provider)}
     c = convs.get(a.conv, {})
+    live = st.open_draft_for(a.provider, a.conv)
     did = st.create_draft(a.provider, a.conv, body,
                           inbound=a.inbound or "",
                           item_title=c.get("item_title") or a.title or "",
                           partner_name=c.get("partner_name") or a.buyer or "")
-    print(json.dumps({"draft_id": did,
+    # 🔴 Say OUT LOUD whether the body just written is the body that came back.
+    # Verified failure 2026-11-07: a cron draft was live for the same conversation,
+    # `create_draft` returned that existing id, and the caller then approved it —
+    # sending a message nobody had written on purpose. `reused: true` is the signal
+    # to supersede instead of approving.
+    reused = bool(live) and live != did
+    print(json.dumps({"draft_id": did, "reused": reused,
+                      "note": ("existing live draft returned — body NOT stored"
+                               if reused else "created"),
                       "message": notify.draft_message(st.draft(did))},
                      indent=1, ensure_ascii=False))
     return 0
@@ -166,7 +176,7 @@ def cmd_approve(a):
     if a.action == "ignore":
         st.decide(a.id, "ignored", a.by)
         print(f"IGNORED draft #{a.id}")
-        _maybe_clear_keyboard(st, f"\u2705 #{a.id} ignored")
+        notify.ping(f"\u2705 #{a.id} ignored")
         return 0
 
     if a.action == "supersede":
@@ -182,20 +192,24 @@ def cmd_approve(a):
         print(json.dumps({"superseded": a.id, "draft_id": new_id,
                           "message": notify.draft_message(st.draft(new_id))},
                          indent=1, ensure_ascii=False))
+        notify.ping(f"\u270e\ufe0f #{a.id} rewritten \u2014 new card #{new_id}")
         return 0
 
     if a.action == "send":
         body = (Path(a.body_file).read_text(encoding="utf-8").rstrip("\n")
                 if a.body_file else d["body"])
+        notify.ping(f"\u23f3 #{a.id} \u2014 sending\u2026")
         try:
             res = prov(d["provider"]).send(d["conv_id"], body, via=a.via)
         except AuthError as e:
             st.decide(a.id, "failed", a.by, result=f"auth: {e}")
             print(f"AUTH: {e}", file=sys.stderr)
+            notify.ping(f"\u274c #{a.id} failed \u2014 auth: {str(e)[:80]}")
             return 2
         except Exception as e:
             st.decide(a.id, "failed", a.by, result=f"{type(e).__name__}: {e}")
             print(f"SEND FAILED: {type(e).__name__}: {e}", file=sys.stderr)
+            notify.ping(f"\u274c #{a.id} failed \u2014 {type(e).__name__}: {str(e)[:80]}")
             return 4
         st.decide(a.id, "sent", a.by, result=json.dumps(res)[:500])
         st.add_message(d["provider"], d["conv_id"], body, "out")
@@ -205,7 +219,7 @@ def cmd_approve(a):
                 st.close_event(e["id"])
         print(json.dumps({"sent": True, "draft_id": a.id, "result": res},
                          indent=1, ensure_ascii=False))
-        _maybe_clear_keyboard(st, f"\u2705 #{a.id} sent")
+        notify.ping(f"\u2705 #{a.id} sent")
         return 0
 
     print(f"unknown action {a.action!r}", file=sys.stderr)
@@ -450,6 +464,8 @@ def main():
     d.add_argument("--inbound", default="")
     d.add_argument("--pickup", action="store_true",
                    help="insert the fixed map link + phone block before the sign-off")
+    d.add_argument("--lang", choices=["da", "en"], default=None,
+                   help="force the pickup block language (default: detect from the body)")
     d.add_argument("--title", default=""); d.add_argument("--buyer", default="")
     d.set_defaults(fn=cmd_draft)
 

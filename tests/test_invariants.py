@@ -158,6 +158,35 @@ def test_pickup_block_comes_from_config_not_source():
         os.environ.pop("HERMES_ENV_FILE", None)
 
 
+def test_pickup_block_speaks_the_buyer_language():
+    """A Danish buyer must not get an English aside, and vice versa."""
+    import os
+    from conversations import snippets as S
+
+    saved = {k: os.environ.get(k) for k in
+             ("PICKUP_MAP", "PICKUP_PHONE", "PICKUP_PHONE_NOTE_DA", "PICKUP_PHONE_NOTE_EN")}
+    try:
+        os.environ.update({"PICKUP_MAP": "https://maps.example.test/x",
+                           "PICKUP_PHONE": "12345678",
+                           "PICKUP_PHONE_NOTE_DA": "ring hvis jeg ikke svarer",
+                           "PICKUP_PHONE_NOTE_EN": "call me if I'm not replying"})
+
+        da = S.with_pickup("Hej Bo\n\nVi ses kl. 19.\n\nMvh Jakub")
+        en = S.with_pickup("Hi Tristan\n\nSee you at 19:00.\n\nBest, Jakub")
+        assert "ring hvis jeg ikke svarer" in da and "call me" not in da
+        assert "call me if I'm not replying" in en and "ring" not in en
+
+        # detection is a heuristic, so an explicit language always wins
+        forced = S.with_pickup("Hi Bo\n\nSee you at 19.\n\nBest, Jakub", lang="da")
+        assert "ring hvis jeg ikke svarer" in forced
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
 def test_guard_blocks_correction_without_history():
     """A first-ever reply must not open with 'Correction' — there is nothing to correct."""
     import tempfile
