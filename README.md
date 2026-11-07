@@ -1,8 +1,82 @@
 # secondhand-ops
 
-Second-hand marketplace ops, end to end: **materials in → listings out → buyer
-conversations handled → item marked sold**, with a human approving anything that
-reaches a stranger.
+**One person's second-hand bike-parts business, run as a pipeline.**
+
+Photograph a wheel, say what you know about it in a voice memo. It becomes a
+structured record, a marketplace listing, a conversation with a buyer, an
+appointment in the calendar — and finally *sold*, everywhere at once. The only
+thing a model is trusted with is wording; every send, every state change, and every
+price is deterministic, and nothing reaches a stranger without a human tap.
+
+---
+
+## What it looks like
+
+### 1 · Registration — photos and speech in, a structured record out
+
+Send two photos of the part and a 14-second voice note. The harness reads the
+physical label off the photo (`#WRC06`), identifies the rim from the branding,
+decodes the spec sheet — 29"/700c ETRTO 622, 19 mm internal, disc, 9-speed Shimano
+cassette, double-wall, QR — and proposes a price. It stops and asks for confirmation
+rather than guessing when a field is missing.
+
+<img src="docs/assets/registration.jpg" width="420" alt="Chat intake: photos and a voice memo become an item record with extracted specs and a suggested price">
+
+### 2 · Database — one row, and it is the source of truth
+
+The record lands in a Notion table: name, DB number, stock state (`LISTED` / `SOLD`),
+spec notes, the DBA and Facebook URLs, photo, price. Every later stage reads this
+row rather than remembering anything.
+
+<img src="docs/assets/database.jpg" width="820" alt="Notion inventory table with stock states, marketplace URLs and prices">
+
+### 3 · Publishing — the same record becomes ads
+
+Listings are generated from the record and posted to DBA and Facebook Marketplace,
+with the URLs written back into the row above.
+
+### 4 · Conversations — a buyer writes, you get a card
+
+A buyer asks about a wheel. The lane polls the marketplace in the background, drafts
+a reply, and delivers it to Telegram with the question, the draft, and four choices.
+**Drafting is the only step that costs a model call**; polling, delivery and sending
+are scripts.
+
+<img src="docs/assets/buyer_dba.jpg" width="330" alt="A buyer's message on DBA asking about cassette, rim size and shipping">
+<img src="docs/assets/telegram_card.jpg" width="330" alt="The same message relayed to Telegram with a drafted reply and four approval buttons">
+
+The four options are shortcuts, not a closed set — anything typed is an instruction.
+Sending is verified against the marketplace afterwards: the ad must actually show
+your text, because an HTTP 200 is not a delivery.
+
+### 5 · Agreement — the pickup goes in the calendar
+
+When a time is agreed, the reply carries the address and phone number in the buyer's
+language, and the pickup becomes a calendar entry so it cannot be forgotten.
+
+<img src="docs/assets/calendar.jpg" width="420" alt="Calendar showing buyer pickups only; personal events removed">
+
+### 6 · Sold — one confirmation, every surface updated
+
+After the visit you confirm it sold. The ad is marked sold on the marketplace, the
+row flips to `SOLD`, and any wheelset it belongs to cascades with it.
+
+---
+
+## Where it actually stands
+
+Honest labels, because a pipeline diagram that promises more than the code does is
+worse than no diagram:
+
+| Stage | State |
+|---|---|
+| Intake, extraction, pricing suggestion | **live** |
+| Notion record + local item folder | **live** |
+| Publishing to DBA and Facebook | **live** |
+| Buyer conversations on DBA → Telegram → verified send | **live** |
+| Calendar entries for agreed pickups | **live** |
+| Mark-sold cascade (marketplace + database) | **live** |
+| Buyer conversations on **Facebook Marketplace** | **not built yet** — `src/conversations/providers/fb.py` is a documented stub with the interface already pinned |
 
 Built for DBA.dk and Facebook Marketplace. Provider-agnostic by construction — a
 new marketplace is one file per stage, never a change to the pipeline.
