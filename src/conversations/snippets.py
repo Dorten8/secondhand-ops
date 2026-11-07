@@ -22,7 +22,12 @@ import os
 import re
 from pathlib import Path
 
-ENV_FILE = Path(os.environ.get("HERMES_ENV_FILE", "/home/hermes/hermes/home/.env"))
+DEFAULT_ENV_FILE = "/home/hermes/hermes/home/.env"
+
+
+def env_file() -> Path:
+    """Resolved per call, not at import: a caller (or a test) may point it elsewhere."""
+    return Path(os.environ.get("HERMES_ENV_FILE", DEFAULT_ENV_FILE))
 
 SIGNOFFS = ("mvh", "best", "kind regards", "venlig hilsen", "hilsen", "med venlig hilsen")
 
@@ -38,7 +43,7 @@ def _env(name: str, default: str = "") -> str:
     if val:
         return val.strip()
     try:
-        txt = ENV_FILE.read_text(encoding="utf-8", errors="replace")
+        txt = env_file().read_text(encoding="utf-8", errors="replace")
     except OSError:
         return default
     m = re.search(rf"^{re.escape(name)}=(.+)$", txt, re.M)
