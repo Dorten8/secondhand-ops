@@ -23,6 +23,16 @@ def _escape(t: str) -> str:
     return (t or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
+# Which marketplace a conversation came from. The card must say it, because the
+# same buyer name can exist on two platforms and the reply is sent to one of them.
+PLATFORM_LABEL = {"dba": "DBA.dk", "fb": "Facebook", "facebook": "Facebook"}
+
+
+def platform_label(provider: str | None) -> str:
+    key = (provider or "").strip().lower()
+    return PLATFORM_LABEL.get(key, (key.upper() or "unknown"))
+
+
 def to_html(draft: dict) -> str:
     """The same message as `draft_message`, in Telegram HTML so formatting survives
     without a Markdown parser failing on a stray underscore or asterisk."""
@@ -31,7 +41,8 @@ def to_html(draft: dict) -> str:
     inbound = _escape((draft.get("inbound") or "").strip())
     body = _escape((draft.get("body") or "").strip())
 
-    head = f"🤖 <b>[Hermes] — {buyer}"
+    plat = _escape(platform_label(draft.get("provider")))
+    head = f"🤖 <b>[Hermes] — {plat} · {buyer}"
     if title:
         head += f" · {title[:55]}"
     head += f"</b>  <code>#{draft['id']}</code>"
@@ -84,7 +95,8 @@ def draft_message(draft: dict) -> str:
     inbound = (draft.get("inbound") or "").strip()
     body = (draft.get("body") or "").strip()
 
-    head = f"\U0001f916 **[Hermes] \u2014 {buyer or 'buyer'}"
+    plat = platform_label(draft.get("provider"))
+    head = f"\U0001f916 **[Hermes] \u2014 {plat} \u00b7 {buyer or 'buyer'}"
     if title:
         head += f" \u00b7 {title[:55]}"
     head += f"**  `#{draft['id']}`"
@@ -105,6 +117,18 @@ def digest_message(new_convs: list) -> str:
         lines.append(f"**{i}. {(c.item_title or '')[:50]}**")
         lines.append(f"   {c.partner_name}: \u201c{c.last_preview[:120]}\u201d")
     return "\n".join(lines)
+
+
+def ping(note: str, chat: str = DEFAULT_CHAT,
+         thread: int | None = DEFAULT_THREAD, token: str | None = None) -> dict:
+    """Zero-token status line that also strips the reply keyboard.
+
+    Jacob's rule (2026-11-07): one immediate "working on it" when a button is
+    tapped, then exactly one outcome line — "done" or "failed". Nothing else,
+    and never from the model. `ping` is that line; the removal of the keyboard
+    comes with it, so a tapped card cannot leave stale buttons behind.
+    """
+    return clear_keyboard(note, chat=chat, thread=thread, token=token)
 
 
 def clear_keyboard(note: str, chat: str = DEFAULT_CHAT,

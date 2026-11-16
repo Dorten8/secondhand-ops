@@ -94,6 +94,23 @@ def test_router_understands_button_labels():
     assert other["action"] == A.ACTION_FREEFORM and other["body"] == ""
 
 
+def test_card_says_which_platform():
+    """A buyer name can exist on two marketplaces; the card must say which one."""
+    from conversations import notify as N
+    d = {"id": 19, "provider": "dba", "partner_name": "Tristan",
+         "item_title": 'Front Wheel / Forhjul - 27.5"', "inbound": "q", "body": "Hi"}
+    head = N.draft_message(d).split("\n")[0]
+    assert "DBA.dk" in head, head
+    assert "DBA.dk" in N.to_html(d).split("\n")[0]
+
+    d["provider"] = "fb"
+    assert "Facebook" in N.draft_message(d).split("\n")[0]
+
+    # an unknown provider still names itself rather than rendering blank
+    d["provider"] = "tradera"
+    assert "TRADERA" in N.draft_message(d).split("\n")[0]
+
+
 def test_four_options_stay_four():
     """Jacob's spec is four choices; removing one is not a style change."""
     from conversations import notify as N

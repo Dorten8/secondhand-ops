@@ -82,6 +82,29 @@ def is_stale(last_at: str, max_age_days: int = MAX_AGE_DAYS) -> bool:
     return age > max_age_days
 
 
+def is_system_message(text: str) -> bool:
+    """True when the "latest message" is DBA talking, not the buyer.
+
+    Verified 2026-11-07: sending a phone number or link makes DBA drop its own
+    bubble into the thread — "Besked fra DBA: Vær forsigtig / Det ser ud til, at
+    du deler personlige oplysninger…". The poll read that as a buyer message and
+    drafted an apology for a warning that needs no answer. Jacob's instruction:
+    "when dba send this exact message it just means they are warning me, that is
+    fine! Add it to the script! And ignore it".
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return False
+    return any(p in t for p in (
+        "deler personlige oplysninger",
+        "besked fra dba",
+        "vær forsigtig",
+        "vaer forsigtig",
+        "forbeholder sig retten til at kontrollere",
+        "kan ikke svare på denne besked",
+    ))
+
+
 def poll(provider_name: str = "dba", store: Store | None = None,
          max_age_days: int | None = None) -> int:
     store = store or Store()
@@ -101,7 +124,7 @@ def poll(provider_name: str = "dba", store: Store | None = None,
         print(f"POLL ERROR: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2
 
-    queued = stale = sold = 0
+    queued = stale = sold = sysmsg = 0
     for c in convos:
         store.upsert_conversation(
             provider_name, c.conv_id,
@@ -116,6 +139,14 @@ def poll(provider_name: str = "dba", store: Store | None = None,
 
         if not c.ball_is_with_us() or not c.last_preview:
             continue
+        if is_system_message(c.last_preview):
+            # DBA's own warning bubble — not the buyer, needs no reply. Close any
+            # stale queue entry so it cannot wake the agent again.
+            for ev in store.open_events("needs_draft"):
+                if ev["provider"] == provider_name and ev["conv_id"] == c.conv_id:
+                    store.close_event(ev["id"])
+            sysmsg += 1
+            continue
         if c.sold:
             sold += 1
             continue
@@ -125,6 +156,13 @@ def poll(provider_name: str = "dba", store: Store | None = None,
         # A conversation that already has a live draft needs no second one; queuing it
         # would wake the agent to redo work and then get refused by the delivery queue.
         if store.open_draft_for(provider_name, c.conv_id):
+            continue
+        # the same buyer message, already sent or ignored → not news, do not re-card it
+        if store.handled_inbound(provider_name, c.conv_id, c.last_preview):
+            for ev in store.open_events("needs_draft"):
+                if ev["provider"] == provider_name and ev["conv_id"] == c.conv_id:
+                    store.close_event(ev["id"])
+            stale += 1
             continue
         if store.push_event("needs_draft", provider_name, c.conv_id, c.last_preview):
             queued += 1
@@ -136,7 +174,7 @@ def poll(provider_name: str = "dba", store: Store | None = None,
 
     store.end_run(run_id, "ok",
                   f"{len(convos)} conversations, prime={priming}, "
-                  f"queued={queued}, stale={stale}, sold={sold}")
+                  f"queued={queued}, stale={stale}, sold={sold}, sysmsg={sysmsg}")
 
     if priming:
         # silent, but say it on stderr so a human running it by hand understands
@@ -153,12 +191,13 @@ def poll(provider_name: str = "dba", store: Store | None = None,
         return 0                          # SILENT
 
     by_conv = {c["conv_id"]: c for c in store.conversations(provider_name)}
-    print("DBA MESSAGES NEEDING A REPLY")
+    print(f"{provider_name.upper()} MESSAGES NEEDING A REPLY")
     print("=" * 48)
     for ev in open_ev:
         c = by_conv.get(ev["conv_id"], {})
         print(f"\nAD:    {c.get('item_title') or '?'}")
         print(f"ITEM:  {c.get('item_id') or '?'}")
+        print(f"PLATF: {provider_name.upper()}")
         print(f"FROM:  {c.get('partner_name') or '?'}")
         print(f"CONV:  {ev['conv_id']}")
         print(f"WHEN:  {str(c.get('last_at') or '')[:16]}")
