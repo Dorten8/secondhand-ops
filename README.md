@@ -8,6 +8,34 @@ appointment in the calendar — and finally *sold*, everywhere at once. The only
 thing a model is trusted with is wording; every send, every state change, and every
 price is deterministic, and nothing reaches a stranger without a human tap.
 
+```mermaid
+flowchart LR
+    %% The whole loop. Every arrow is a script or a human decision —
+    %% the model only writes wording, inside the draft step.
+    A["📷 Registration<br/><small>photos + voice memo</small>"] -->|"extract specs,<br/>propose price"| B["🗃️ Record<br/><small>Notion row + item folder</small>"]
+    B -->|"generate ad text<br/>from the record"| C["📤 Publishing<br/><small>DBA + Facebook</small>"]
+    C -->|"buyer writes"| D{"💬 Buyer message<br/><small>polled by script</small>"}
+    D -->|"draft only<br/>(the one model call)"| E["🤖 Draft card<br/><small>Telegram, 4 options</small>"]
+    E -->|"human taps"| F{"Agreed?"}
+    F -->|"no — ignore<br/>or reword"| D
+    F -->|"yes — time set"| G["📍 Confirmation<br/><small>address + phone,<br/>buyer's language</small>"]
+    G -->|"script writes event"| H["📅 Calendar<br/><small>buyer pickup</small>"]
+    H -->|"after the visit,<br/>one tap"| I["✅ Sold<br/><small>ad sold + row SOLD +<br/>wheelset cascade</small>"]
+    I -.->|"closes the loop"| B
+
+    classDef human fill:#2d3748,stroke:#63b3ed,stroke-width:2px,color:#fff
+    classDef script fill:#1a202c,stroke:#4a5568,color:#e2e8f0
+    classDef model fill:#553c9a,stroke:#b794f4,stroke-width:2px,color:#fff
+    class E model
+    class D,F,H human
+    class A,B,C,G,I script
+```
+
+**Reading it:** grey = deterministic code, blue-bordered = a point where you decide,
+purple = the only place a model runs. A reply can only leave the system on one of those
+blue arrows, and every send is re-read from the marketplace afterwards — an HTTP 200 is
+not a delivery.
+
 ---
 
 ## What it looks like
