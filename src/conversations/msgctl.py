@@ -24,9 +24,11 @@ Exit codes: 0 ok, 2 auth/network, 3 refused (gate), 4 send unverified.
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import os
 import re
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -444,6 +446,53 @@ def cmd_deliver(a):
     return 4
 
 
+def cmd_sweep(a):
+    """Drop drafts whose conversation went cold.
+
+    Jacob, 2026-11-16: "ignore any messages more than 1 day old, because this was an old
+    exchange". A weeks-old thread in the queue is not work, it is noise that also blocks
+    the fresh cards. Age comes from the conversation's own last activity, not from when
+    the draft was written.
+    """
+    st = Store()
+    cutoff = time.time() - a.hours * 3600
+    db = st.db
+    # Address the columns by position: Store's connection does not always hand back
+    # sqlite3.Row, and a KeyError here was silently swallowed into "nothing stale".
+    cur = db.execute(
+        """SELECT d.id, d.partner_name, c.last_at
+             FROM drafts d LEFT JOIN conversations c
+               ON c.provider = d.provider AND c.conv_id = d.conv_id
+            WHERE d.status = 'pending'""")
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    dropped, unparsed = [], 0
+    for r in rows:
+        last_at = (r["last_at"] or "")
+        try:
+            ts = datetime.datetime.fromisoformat(last_at).timestamp()
+        except Exception:
+            unparsed += 1
+            continue
+        age_h = (time.time() - ts) / 3600.0
+        if ts >= cutoff:
+            continue
+        db.execute("UPDATE drafts SET status='ignored', decided_at=?, decided_by=?, result=? "
+                   "WHERE id=?",
+                   (time.time(), "auto-stale",
+                    f"conversation last active {age_h:.0f}h ago (>{a.hours:g}h) — old exchange",
+                    r["id"]))
+        dropped.append((r["id"], r["partner_name"], age_h))
+    db.commit()
+    if not dropped:
+        print(f"NO_STALE_DRAFTS ({len(rows)} pending, {unparsed} without a readable date)")
+        return 0
+    print(f"swept {len(dropped)} stale draft(s) older than {a.hours:g}h:")
+    for did, who, age_h in dropped:
+        print(f"  #{did:<4} {(who or '?')[:14]:<15} last active {age_h:.0f}h ago")
+    return 0
+
+
 def cmd_notify(a):
     """Deliver the draft card to the human. This is the script the chat receives —
     not the agent writing prose, so the wording cannot drift and it costs nothing."""
@@ -538,6 +587,10 @@ def main():
     sub.add_parser("pending").set_defaults(fn=cmd_pending)
     sub.add_parser("list").set_defaults(fn=cmd_list)
     sub.add_parser("drafts").set_defaults(fn=cmd_drafts)
+    sw = sub.add_parser("sweep")
+    sw.add_argument("--hours", type=float, default=24.0)
+    sw.set_defaults(fn=cmd_sweep)
+
     un = sub.add_parser("unanswered")
     un.add_argument("--days", type=int, default=14)
     un.add_argument("--json", action="store_true")

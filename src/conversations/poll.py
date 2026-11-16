@@ -38,6 +38,7 @@ EXIT CONTRACT
 """
 from __future__ import annotations
 
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,7 +49,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "providers"))
 from mstore import Store  # noqa: E402
 from base import AuthError, ProviderError  # noqa: E402
 
-MAX_AGE_DAYS = 14
+# Jacob, 2026-11-16: "ignore any messages more than 1 day old, because this was an old
+# exchange". Fourteen days of backlog is not a queue, it is archive; a weeks-old thread
+# presented as work is noise that also blocks today's buyers.
+MAX_AGE_DAYS = float(os.environ.get("MSG_STALE_DAYS", "1"))
 
 
 def get_provider(name: str):
@@ -185,12 +189,30 @@ def poll(provider_name: str = "dba", store: Store | None = None,
     # Report the whole OPEN queue, not only what this tick created. Otherwise a
     # drafting run that crashed would leave a thread queued but invisible, and
     # the monitor would keep printing an unchanged (empty) digest forever.
-    open_ev = [ev for ev in store.open_events("needs_draft")
-               if not store.open_draft_for(provider_name, ev["conv_id"])]
+    # The age filter has to apply HERE too: events written before the freshness rule
+    # existed still sit in the table, and re-reporting a 31-hour-old thread is exactly
+    # the "old exchange" Jacob told me to ignore. An event with no readable date is kept,
+    # because hiding something of unknown age is worse than showing it.
+    by_conv = {c["conv_id"]: c for c in store.conversations(provider_name)}
+    conv_meta = by_conv
+    open_ev = []
+    for ev in store.open_events("needs_draft"):
+        # open_events() is global: without this filter a Facebook thread was printed by
+        # the DBA poll, with empty AD/WHEN columns, and counted as DBA work.
+        if ev.get("provider") and ev["provider"] != provider_name:
+            continue
+        if store.open_draft_for(provider_name, ev["conv_id"]):
+            continue
+        last_at = ev.get("last_at") if isinstance(ev, dict) else None
+        if last_at is None:
+            c = conv_meta.get(ev["conv_id"], {})
+            last_at = c.get("last_at", "")
+        if is_stale(last_at, max_age):
+            continue
+        open_ev.append(ev)
     if not open_ev:
         return 0                          # SILENT
 
-    by_conv = {c["conv_id"]: c for c in store.conversations(provider_name)}
     print(f"{provider_name.upper()} MESSAGES NEEDING A REPLY")
     print("=" * 48)
     for ev in open_ev:
