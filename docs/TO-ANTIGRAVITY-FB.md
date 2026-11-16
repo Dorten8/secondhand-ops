@@ -67,9 +67,13 @@ Network capture (new, works)
 
 **Discovering thread ids.** Because rows have no href, the only ways to learn an id are:
 
-1. **UI scan** — click a row, read the resulting URL. Implemented in `fb_scan.py` but
-   **flaky**: identical clicks navigate roughly half the time; retries help but a scan
-   of 14 rows takes minutes and misses rows.
+1. **UI scan** — click a row, read the resulting URL. Implemented in `fb_scan.py`.
+   **Result: it does not work. 4 rows × 2 attempts = 0 threads learned.** Synthetic
+   mouse events on these rows do not trigger navigation under automation; the single
+   successful redirect seen while probing came from a different click position and did
+   not reproduce. Treat the UI path as dead unless you find the React handler's own
+   trigger (`pointerdown`/`pointerup` with a real `pointerId`, or Enter on a focused
+   row).
 2. **GraphQL thread list** — the right answer, not yet found. The list must be fetched
    by some `doc_id` with variables carrying the folder/marketplace filter. Find it via
    `Network.requestWillBeSent` `postData` (look for `doc_id`, and strings like
