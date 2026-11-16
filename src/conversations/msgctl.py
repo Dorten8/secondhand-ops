@@ -25,9 +25,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
+import time
 from pathlib import Path
+
+# How long a delivered-but-unanswered card may block the next one. The rule exists so
+# two keyboards never point at once; it must not become a starvation trap, because that
+# is what it was: eight real buyer messages sat undelivered behind one ignored card
+# (observed 2026-11-16). Past this age the old card no longer blocks — it stays pending
+# and is still decidable — and the next card goes out.
+CARD_TTL_HOURS = float(os.environ.get("MSG_CARD_TTL_HOURS", "3"))
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -96,16 +105,62 @@ def cmd_pending(a):
 
 
 # ---------------------------------------------------------------- drafts
+def _pickup_leak(body: str, inbound: str) -> str | None:
+    """Refuse a draft that hands out the pickup details before a time is agreed.
+
+    The rule already exists in the skill ("no address before a specific day + time"),
+    and it was still broken by hand on 2026-11-16: a reply to a buyer who was walking
+    away on price ended with the map link and the pickup postcode. A rule that depends
+    on remembering is not a rule, so this is mechanical:
+
+      * does the body contain the configured map link or phone number?
+      * does the inbound message contain an agreed time ("kl. 19", "19:00", "i morgen")?
+    """
+    import os
+    import re as _re
+    from pathlib import Path as _Path
+
+    env = _Path(os.environ.get("HERMES_ENV_FILE", "/home/hermes/hermes/home/.env"))
+    secrets = []
+    try:
+        for line in env.read_text(encoding="utf-8", errors="replace").splitlines():
+            if line.startswith(("PICKUP_MAP=", "PICKUP_PHONE=")):
+                v = line.split("=", 1)[1].strip().strip('"').strip("'")
+                if v:
+                    secrets.append(v)
+    except OSError:
+        return None
+    hit = next((v for v in secrets if v and v in body), None)
+    if not hit:
+        return None
+    if _re.search(r"\b\d{1,2}[:.]\d{2}\b|\bkl\.?\s*\d|\bi dag\b|\bi morgen\b|\btoday\b|\btomorrow\b", inbound or "", _re.I):
+        return None
+    return ("REFUSED: the draft contains the pickup map/phone but nothing in the buyer's "
+            "message agrees a time. Address only after a specific day + time.")
+
+
 def cmd_draft(a):
     st = Store()
     body = Path(a.body_file).read_text(encoding="utf-8").rstrip("\n") if a.body_file else (a.body or "")
     if len(body.strip()) < 8:
         print(f"REFUSED: body is {len(body.strip())} chars", file=sys.stderr)
         return 3
+    leak = _pickup_leak(body, a.inbound or "")
+    if leak:
+        print(leak, file=sys.stderr)
+        return 3
     if getattr(a, "pickup", False):
         # language follows the message being sent, unless the caller pins it
         body = snippets.with_pickup(body, lang=getattr(a, "lang", None) or None)
+    # Resolve the provider FROM the conversation: a Facebook thread handed to
+    # `draft` with the default provider made the send stage pick the DBA driver
+    # and fail with "no page matching 'dba.dk'" (2026-11-15).
     convs = {c["conv_id"]: c for c in st.conversations(a.provider)}
+    if a.conv not in convs:
+        for c0 in st.conversations():
+            if c0["conv_id"] == a.conv:
+                a.provider, convs = c0["provider"], {c0["conv_id"]: c0}
+                break
     c = convs.get(a.conv, {})
     live = st.open_draft_for(a.provider, a.conv)
     did = st.create_draft(a.provider, a.conv, body,
@@ -145,6 +200,33 @@ def cmd_show(a):
         return 3
     print(notify.draft_message(d))
     return 0
+
+
+DAY_WORDS = ("i dag", "i morgen", "i aften", "søndag", "mandag", "tirsdag",
+             "onsdag", "torsdag", "fredag", "lørdag", "sunday", "monday", "tuesday",
+             "wednesday", "thursday", "friday", "saturday", "today", "tomorrow")
+TIME_RE = re.compile(r"\b(?:kl\.?\s*)?\d{1,2}[.:]\d{2}\b")
+
+
+def _window_in(body: str) -> str:
+    """Return the day/time phrasing if this message promises a time, else ''.
+
+    Used to record a reservation (a `slot`) so that a second buyer on the same
+    item can be flagged. Deliberately conservative: a bare "kom forbi" is not a
+    slot; a day word or a clock time is.
+    """
+    if not body:
+        return ""
+    low = body.lower()
+    has_time = bool(TIME_RE.search(low))
+    has_day = any(w in low for w in DAY_WORDS)
+    if not (has_time or has_day):
+        return ""
+    for line in body.split("\n"):
+        l = line.lower()
+        if TIME_RE.search(l) or any(w in l for w in DAY_WORDS):
+            return line.strip()[:80]
+    return ""
 
 
 def _maybe_clear_keyboard(st, note: str) -> None:
@@ -219,6 +301,18 @@ def cmd_approve(a):
                 st.close_event(e["id"])
         print(json.dumps({"sent": True, "draft_id": a.id, "result": res},
                          indent=1, ensure_ascii=False))
+        # remember the reservation: the item is now spoken for, which is what lets
+        # a second buyer on the same item be flagged instead of double-booked.
+        try:
+            convo = next((c for c in st.conversations(d["provider"])
+                          if c["conv_id"] == d["conv_id"]), None)
+            win = _window_in(body)
+            if convo and convo.get("item_id") and win:
+                st.add_slot(d["provider"], convo["item_id"], d["conv_id"],
+                            convo.get("partner_name") or "", win)
+                print(f"SLOT recorded: item {convo['item_id']} -> {convo.get('partner_name')} ({win})")
+        except Exception as exc:  # noqa: BLE001
+            print(f"SLOT record failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         notify.ping(f"\u2705 #{a.id} sent")
         return 0
 
@@ -361,12 +455,25 @@ def cmd_notify(a):
     # one live card at a time: a chat-wide keyboard cannot point at two cards
     out = st.outstanding_card()
     if out and out["id"] != a.id:
-        print(f"not sending #{a.id}: card #{out['id']} ({out['partner_name']}) is still "
-              f"unanswered. Decide that one first, or pass --force.", file=sys.stderr)
-        if not a.force:
+        age_h = (time.time() - float(out.get("notified_at") or 0)) / 3600.0
+        stale = age_h >= CARD_TTL_HOURS
+        if not (a.force or stale):
+            print(f"not sending #{a.id}: card #{out['id']} ({out['partner_name']}) is still "
+                  f"unanswered ({age_h:.1f}h, releases after {CARD_TTL_HOURS:g}h). "
+                  f"Decide it, or pass --force.", file=sys.stderr)
             return 5
+        if stale:
+            print(f"note: card #{out['id']} unanswered for {age_h:.1f}h — not blocking any more; "
+                  f"it stays pending and decidable.", file=sys.stderr)
 
     html = notify.to_html(d)
+    # Say how much is behind this card. Silence about the queue is what made eight real
+    # buyer messages look like "Facebook is not sending anything" (2026-11-16).
+    waiting = [x for x in st.pending_drafts() if x["id"] != a.id]
+    if waiting:
+        ids = " ".join(f"#{x['id']}" for x in waiting[:8])
+        more = f" (+{len(waiting) - 8})" if len(waiting) > 8 else ""
+        html += f"\n\n<i>↳ {len(waiting)} more waiting: {ids}{more}</i>"
     if a.no_send:
         print(html)
         return 0
