@@ -10,6 +10,31 @@ the send against the thread. Everything else in the lane already works — the s
 the poll, the Telegram card, the approval router, the send verification pattern. This
 is one provider file.
 
+## How to test it from the Legion (cookies, not the browser)
+
+You do not need this host's CDP. Export the signed-in session as a cookie jar:
+
+```bash
+# on the host, by Hermes:
+python3 tools/export_cookies.py facebook.com --out /tmp/fb_cookies.json
+# -> 8 cookies, c_user/xs/datr present, mode 0600
+```
+
+Then on the Legion, load it as Playwright storage state:
+
+```python
+browser = p.chromium.launch()
+ctx = browser.new_context(storage_state="/tmp/fb_cookies.json")
+```
+
+That is a **copy of the same session**: both browsers are signed in at once, which
+Facebook tolerates on a home IP but may flag if you are on mobile data or a VPN. If a
+login challenge appears, stop — do not attempt to solve it, tell me and I will
+re-export.
+
+Rules for that file: `0600`, outside the repo (the exporter refuses to write inside
+it), never committed, never pasted into a chat or issue.
+
 ## The hard constraint
 
 **You cannot test this from the Legion.** The Facebook session lives in a Brave
