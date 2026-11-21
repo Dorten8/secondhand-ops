@@ -93,7 +93,14 @@ fi
 pkill -f "user-data-dir=${COPY_PROFILE}" 2>/dev/null && sleep 2 || true
 
 # --- profile copy -------------------------------------------------------
-if [ ! -d "${COPY_PROFILE}" ]; then
+FRESH=0
+case "${1:-}" in --fresh) FRESH=1 ;; esac
+
+if [ "$FRESH" = "1" ]; then
+  say "--fresh: using an empty profile (no copied cookies, no login state)."
+  mkdir -p "${COPY_PROFILE}"
+  rm -f "${COPY_PROFILE}/SingletonLock" "${COPY_PROFILE}/SingletonSocket" "${COPY_PROFILE}/SingletonCookie" 2>/dev/null || true
+elif [ ! -d "${COPY_PROFILE}" ]; then
   [ -d "$SRC_PROFILE" ] || fail "no Brave profile at ${SRC_PROFILE} — start Brave once, then retry"
   say "First run: copying your Brave profile (once). Your normal Brave keeps running."
   mkdir -p "${COPY_ROOT}"
@@ -114,6 +121,9 @@ nohup "${BRAVE}" \
   --no-first-run \
   --no-default-browser-check \
   --restore-last-session \
+  --disable-gpu \
+  --disable-gpu-sandbox \
+  --disable-dev-shm-usage \
   >"$LOG" 2>&1 &
 
 for i in $(seq 1 20); do
@@ -128,4 +138,35 @@ for i in $(seq 1 20); do
   fi
 done
 
-fail "Brave started but port ${PORT} never answered. See ${LOG}"
+# --- fallback: windowless -------------------------------------------------
+# Measured failure mode: Brave starts, prints "DevTools listening on ws://…", then
+# dies with "GPU process isn't usable. Goodbye." — the port was up for under a
+# second, so it looks like the flags never worked. A windowless instance needs no
+# GPU and no X auth, and CDP drives it identically.
+say "Windowed launch did not survive — retrying headless."
+pkill -f "user-data-dir=${COPY_PROFILE}" 2>/dev/null || true
+sleep 2
+nohup "${BRAVE}" \
+  --headless=new \
+  --user-data-dir="${COPY_PROFILE}" \
+  --remote-debugging-port="${PORT}" \
+  --remote-allow-origins='*' \
+  --no-first-run \
+  --disable-gpu \
+  --disable-dev-shm-usage \
+  >>"$LOG" 2>&1 &
+
+for i in $(seq 1 20); do
+  sleep 1
+  if curl -s -m 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+    say ""
+    say "READY (headless) — Hermes can drive this browser on port ${PORT}."
+    curl -s "http://127.0.0.1:${PORT}/json/version" | head -3
+    say ""
+    say "No window on purpose: the GUI build keeps dying on this box (GPU sandbox)."
+    say "Log: ${LOG}"
+    exit 0
+  fi
+done
+
+fail "port ${PORT} never answered, windowed or headless. Last lines of ${LOG}:"$(printf '\n'; tail -5 "$LOG" 2>/dev/null)
