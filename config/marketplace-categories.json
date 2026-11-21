@@ -1,0 +1,29 @@
+{
+  "_comment": "Marketplace-specific naming, per category. DBA uses numeric path codes; Facebook uses labels. Condition is per-marketplace wording for the same physical state.",
+  "mobile_phone": {
+    "postal": "2300",
+    "dba": {
+      "category": { "main": "93", "sub": "3217", "kind": "39" },
+      "condition": "2",
+      "condition_label": "Som ny - ingen synlige brugsspor",
+      "attributes": { "brand": "Google" }
+    },
+    "fb": {
+      "category": "Mobile phones",
+      "condition": "Used - Like New"
+    }
+  },
+  "bike": {
+    "postal": "2300",
+    "dba": {
+      "category": { "main": "93", "sub": "3217", "kind": "39" },
+      "condition": "2",
+      "condition_label": "Brugt - men i god stand",
+      "attributes": {}
+    },
+    "fb": {
+      "category": "Bicycles",
+      "condition": "Used - Good"
+    }
+  }
+}
