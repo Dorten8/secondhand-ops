@@ -51,7 +51,7 @@ def load_env() -> dict[str, str]:
     return {}
 
 
-def api(path: str, token: str, payload: dict | None = None) -> dict:
+def api(path: str, token: str, payload: dict | None = None, method: str | None = None) -> dict:
     data = json.dumps(payload).encode() if payload is not None else None
     req = urllib.request.Request(
         "https://api.notion.com/v1" + path,
@@ -61,7 +61,9 @@ def api(path: str, token: str, payload: dict | None = None) -> dict:
             "Notion-Version": NOTION_VERSION,
             "Content-Type": "application/json",
         },
-        method="POST" if payload is not None else "GET",
+        # Notion: create is POST, page update is PATCH. Defaulting to POST silently
+        # 400s on updates, so callers can name the verb.
+        method=method or ("POST" if payload is not None else "GET"),
     )
     with urllib.request.urlopen(req) as r:
         return json.load(r)

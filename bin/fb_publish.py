@@ -67,7 +67,13 @@ class FB:
             : document;
           const leaves = [...scope.querySelectorAll('*')].filter(e =>
               e.children.length === 0 && (e.innerText || '').trim() === want);
-          const usable = leaves.filter(e => {
+          // Facebook keeps hidden copies of nav labels in the DOM; their rect is 0x0.
+          // Clicking those is where "clicked at (0,0)" came from.
+          const visible = leaves.filter(e => {
+            const r = e.getBoundingClientRect();
+            return r.width > 2 && r.height > 2;
+          });
+          const usable = (visible.length ? visible : leaves).filter(e => {
             const aria = (e.getAttribute('aria-label') || '') + ((e.parentElement && e.parentElement.getAttribute('aria-label')) || '');
             return %s ? true : !/^Header /.test(aria);
           });
