@@ -129,6 +129,8 @@ def summarise(row: dict, stale_days: int) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Report the state of the sales database.")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--quiet", action="store_true",
+                    help="watchdog mode: print ONLY items with flags; silent otherwise")
     ap.add_argument("--stale-days", type=int, default=14)
     ap.add_argument("--database", help="data_source id; default from NOTION_DATABASE_DEFAULT")
     args = ap.parse_args(argv)
@@ -159,6 +161,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.json:
         print(json.dumps(items, indent=2))
+        return 0
+
+    if args.quiet:
+        # Watchdog mode: silence is the success case.
+        flagged = [i for i in items if i["flags"]]
+        if not flagged:
+            return 0
+        for it in flagged:
+            print(f"{it['stock']:<9} {it['name'][:44]:<44} "
+                  f"{it['price_dkk'] or '-':>6} DKK   ⚠ " + "; ".join(it["flags"]))
         return 0
 
     if not items:
