@@ -81,6 +81,13 @@ def number(v: dict) -> str:
     return f"{n:g}" if isinstance(n, (int, float)) else ""
 
 
+def pick(p: dict, *names: str) -> dict:
+    """Return the first present property, so a column rename cannot break the sweep."""
+    for n in names:
+        if n in p:
+            return p[n]
+    return {}
+
 def summarise(row: dict, stale_days: int) -> dict:
     p = row["properties"]
     name = title(p.get("Name", {})) or "(untitled)"
@@ -90,7 +97,11 @@ def summarise(row: dict, stale_days: int) -> dict:
     dba = (p.get("DBA URL", {}) or {}).get("url") or ""
     fb = (p.get("Facebook URL", {}) or {}).get("url") or ""
     photos = len((p.get("Photo", {}) or {}).get("files", []) or [])
-    listing = rich(p.get("Listing", {}))
+    # Schema is operator-owned and was reorganised on 2026-11-21:
+    # "Listing" split into "Listing title" + "Description"; "Notes" -> "Notes_seller".
+    listing_title = rich(pick(p, "Listing title", "Listing"))
+    description = rich(pick(p, "Description"))
+    notes = rich(pick(p, "Notes_seller", "Notes"))
 
     edited = row.get("last_edited_time") or ""
     age = None
@@ -104,8 +115,10 @@ def summarise(row: dict, stale_days: int) -> dict:
     flags = []
     if stock == "LISTED" and not (dba or fb):
         flags.append("LISTED with no ad URL")
-    if stock == "UNLISTED" and not listing:
-        flags.append("no ad text to publish")
+    if stock == "UNLISTED" and not listing_title:
+        flags.append("no listing title")
+    if stock == "UNLISTED" and not description:
+        flags.append("no description to publish")
     if stock == "UNLISTED" and photos == 0:
         flags.append("no photos")
     if stock == "LISTED" and age is not None and age >= stale_days:
