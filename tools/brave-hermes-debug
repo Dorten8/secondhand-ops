@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# brave-hermes-debug — one click, and the browser Hermes drives is running.
+#
+# WHAT IT DOES
+#   Starts Brave with a debugging port (9222) so Hermes can attach over CDP and
+#   publish listings. It does NOT need sudo and it does NOT touch your normal
+#   Brave: it runs from a COPY of your profile, so your tabs stay open and your
+#   real profile is never put at risk.
+#
+#   First run copies the profile (a few hundred MB, once, ~10 s).
+#   Every later run just launches the copy.
+#
+#   Second run in a row is a no-op: if 9222 already answers, it says so and exits.
+#
+# USAGE
+#   Click "Brave — Hermes Debug" in the app grid, or run:
+#       brave-hermes-debug
+#
+# TO STOP IT
+#       brave-hermes-debug --stop
+set -uo pipefail
+
+PORT="${HERMES_CDP_PORT:-9222}"
+SRC_PROFILE="${HOME}/.config/BraveSoftware/Brave-Browser"
+COPY_ROOT="${HOME}/.cache/brave-hermes-debug"
+COPY_PROFILE="${COPY_ROOT}/Brave-Browser"
+BRAVE=""
+for c in /opt/brave.com/brave/brave /usr/bin/brave-browser /usr/bin/brave; do
+  [ -x "$c" ] && { BRAVE="$c"; break; }
+done
+LOG="${HOME}/.cache/brave-hermes-debug.log"
+
+mkdir -p "${HOME}/.cache"
+
+say() { printf '%s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+
+# --- find the desktop session -------------------------------------------
+# Launched from the app grid everything is set. Launched from a script, cron or
+# another agent's shell, DISPLAY is often missing and Brave dies with
+# "Missing X server or $DISPLAY" — which reads like a Brave bug but is not.
+resolve_display() {
+  if [ -n "${DISPLAY:-}" ]; then
+    # a display without XAUTHORITY is a different failure ("Authorization required,
+    # but no authorization protocol specified") that also reads like a crash
+    if [ -z "${XAUTHORITY:-}" ] && [ -f "${HOME}/.Xauthority" ]; then
+      export XAUTHORITY="${HOME}/.Xauthority"
+    fi
+    return 0
+  fi
+  for d in /tmp/.X11-unix/X*; do
+    [ -e "$d" ] || continue
+    n="${d##*/X}"
+    export DISPLAY=":${n}"
+    [ -z "${XAUTHORITY:-}" ] && [ -f "${HOME}/.Xauthority" ] && export XAUTHORITY="${HOME}/.Xauthority"
+    return 0
+  done
+  if [ -S "/run/user/$(id -u)/wayland-0" ]; then
+    export WAYLAND_DISPLAY="wayland-0"
+    export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+    return 0
+  fi
+  return 1
+}
+
+if [ "${1:-}" = "--check" ]; then
+  resolve_display || true
+  say "brave     : ${BRAVE:-NOT FOUND}"
+  say "DISPLAY   : ${DISPLAY:-UNSET}"
+  say "WAYLAND   : ${WAYLAND_DISPLAY:-unset}"
+  say "profile   : ${SRC_PROFILE} $([ -d "$SRC_PROFILE" ] && echo '(exists)' || echo '(MISSING)')"
+  say "copy      : ${COPY_PROFILE} $([ -d "$COPY_PROFILE" ] && echo '(exists)' || echo '(will be created on first run)')"
+  say "port      : ${PORT} $(curl -s -m 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1 && echo '(ANSWERING)' || echo '(free)')"
+  exit 0
+fi
+
+# --- stop ---------------------------------------------------------------
+if [ "${1:-}" = "--stop" ]; then
+  pkill -f "remote-debugging-port=${PORT}" 2>/dev/null && say "stopped the debug instance" || say "nothing running on port ${PORT}"
+  exit 0
+fi
+
+[ -n "$BRAVE" ] || fail "Brave not found (looked for /opt/brave.com/brave/brave and /usr/bin/brave-browser)"
+
+# --- already up? --------------------------------------------------------
+if curl -s -m 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+  say "Already running — Hermes can attach on port ${PORT}."
+  curl -s "http://127.0.0.1:${PORT}/json/version" | head -3
+  exit 0
+fi
+
+# --- a debug instance without the port (stale) --------------------------
+pkill -f "user-data-dir=${COPY_PROFILE}" 2>/dev/null && sleep 2 || true
+
+# --- profile copy -------------------------------------------------------
+if [ ! -d "${COPY_PROFILE}" ]; then
+  [ -d "$SRC_PROFILE" ] || fail "no Brave profile at ${SRC_PROFILE} — start Brave once, then retry"
+  say "First run: copying your Brave profile (once). Your normal Brave keeps running."
+  mkdir -p "${COPY_ROOT}"
+  # Brave must not be writing while we copy cookies; a running browser only risks
+  # a lock file, which we delete below.
+  cp -a "${SRC_PROFILE}" "${COPY_PROFILE}" || fail "profile copy failed"
+  rm -f "${COPY_PROFILE}/SingletonLock" "${COPY_PROFILE}/SingletonSocket" "${COPY_PROFILE}/SingletonCookie" 2>/dev/null || true
+  say "Profile copied to ${COPY_PROFILE}"
+fi
+
+# --- launch -------------------------------------------------------------
+resolve_display || fail "no desktop session found (DISPLAY unset and no X socket in /tmp/.X11-unix) — run this from your desktop, not over ssh"
+say "Starting Brave with debugging on port ${PORT} (DISPLAY=${DISPLAY:-wayland})…"
+nohup "${BRAVE}" \
+  --user-data-dir="${COPY_PROFILE}" \
+  --remote-debugging-port="${PORT}" \
+  --remote-allow-origins='*' \
+  --no-first-run \
+  --no-default-browser-check \
+  --restore-last-session \
+  >"$LOG" 2>&1 &
+
+for i in $(seq 1 20); do
+  sleep 1
+  if curl -s -m 2 "http://127.0.0.1:${PORT}/json/version" >/dev/null 2>&1; then
+    say ""
+    say "READY — Hermes can drive this browser on port ${PORT}."
+    curl -s "http://127.0.0.1:${PORT}/json/version" | head -3
+    say ""
+    say "Log: ${LOG}"
+    exit 0
+  fi
+done
+
+fail "Brave started but port ${PORT} never answered. See ${LOG}"

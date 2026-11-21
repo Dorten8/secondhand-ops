@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Brave — Hermes Debug
+Name[da]=Brave — Hermes Debug
+GenericName=Brave with debugging port
+Comment=Starts Brave with remote debugging on port 9222 so Hermes can publish listings. Uses a copy of your profile, so your normal Brave is untouched.
+Comment[da]=Starter Brave med fjernbetjening på port 9222, så Hermes kan publicere annoncer. Bruger en kopi af din profil — din almindelige Brave røres ikke.
+Exec=/usr/local/bin/brave-hermes-debug
+Icon=brave-browser
+Terminal=true
+Categories=Network;WebBrowser;
+Keywords=brave;debug;hermes;cdp;automation;marketplace;
+StartupNotify=false
