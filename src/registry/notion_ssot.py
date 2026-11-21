@@ -30,8 +30,14 @@ def main():
     parser.add_argument("--list-active", action="store_true", help="List active listed items in Notion")
     parser.add_argument("--sold", help="Mark item as SOLD in Notion SSoT and trigger relational cascade")
     parser.add_argument("--set-price", nargs=2, metavar=("ITEM_ID", "PRICE"), help="Update asking price in DKK")
+    parser.add_argument("--which-db", help="Resolve which database an item routes to, given JSON like {\"category\": \"monitor\"}")
 
     args = parser.parse_args()
+    if args.which_db:
+        from registry.routing import Router
+        print(Router.from_env().database_for(json.loads(args.which_db)))
+        sys.exit(0)
+
     client = NotionClient()
 
     if not client.is_configured:
